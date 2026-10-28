@@ -334,6 +334,20 @@ def check_front_face():
     bridge_lit = (face2 & core).sum() / max(1, core.sum())
     upper_lit = (face2 & upper).sum() / max(1, upper.sum())
     neck_lit2 = (face2 & (neck > 0) & ~body).sum() / max(1, ((neck > 0) & ~body).sum())
+    # the bow: a thin stick 10 cm in front of the upper bout, joined to the
+    # player's arm (wide, beside the cello): it must not cut a band
+    bowed = dict(pkt)
+    stick = np.zeros_like(mask, np.uint8)
+    cv2.fillPoly(stick, [to_px(np.array([[-0.45, 0.20], [0.30, 0.20], [0.30, 0.21], [-0.45, 0.21]]))], 1)
+    cv2.circle(stick, tuple(to_px(np.array([[-0.4, 0.2]]))[0]), int(0.08 * K_CAM[0, 0] / 1.9), 1, -1)
+    dh, dw = pkt["depth"].shape
+    sd = cv2.resize(stick, (dw, dh), interpolation=cv2.INTER_NEAREST) > 0
+    sd = cv2.dilate(sd.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0     # smoothed depth widens it
+    bowed["depth"] = np.where(sd, np.float32(1.75), pkt["depth"]).astype(np.float32)
+    face3 = front_face(full, plane, K_CAM, bowed["depth"], None, inset_mm=6.0)
+    under = body & (cv2.dilate(stick, np.ones((15, 15), np.uint8)) > 0)
+    bow_lit = (face3 & under).sum() / max(1, under.sum())
+    ok &= check("front face: the bow cuts no band", bow_lit > 0.95, f"under the bow {100 * bow_lit:.0f}% lit")
     return ok & check("front face: holes, covered upper bout", bridge_lit > 0.95 and upper_lit > 0.75
                       and neck_lit2 < 0.02,
                       f"bridge hole lit {100 * bridge_lit:.0f}%, uncovered upper bout lit "

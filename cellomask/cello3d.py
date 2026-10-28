@@ -157,7 +157,7 @@ class CelloPlane:
 
 
 def front_face(mask, plane, K, depth=None, conf=None, inset_mm=6.0, body_only=True,
-               proud=0.06, min_proud_cm2=20.0, neck_mm=140.0, min_neck_cm2=60.0, scale=4,
+               proud=0.06, min_proud_cm2=20.0, proud_mm=60.0, neck_mm=140.0, min_neck_cm2=60.0, scale=4,
                axis=None, neck_off_mm=60.0):
     """The part of the mask that is the cello's front face, for projecting on.
 
@@ -172,7 +172,10 @@ def front_face(mask, plane, K, depth=None, conf=None, inset_mm=6.0, body_only=Tr
       narrow by an arm covering the rest is off to the side, and stays.
     - proud: depth more than this (metres) in front of the cello's plane is
       not the top (a hand, the bow, the fingerboard towards the nut), when
-      it covers at least `min_proud_cm2`. The arched top and fingerboard
+      it covers at least `min_proud_cm2` and is at least `proud_mm` wide
+      (a hand, 8 cm and up; not the bow: its stick, 3-5 cm wide in the
+      smoothed depth, cut a flickering band across the upper bout), judged
+      on the cello only. The arched top and fingerboard
       already stand ~3 cm off the plane: at 4 cm one noisy depth frame
       blanked a patch of the lower bout.
     - inset_mm: the edge is pulled in so the light never reaches the ribs
@@ -234,11 +237,18 @@ def front_face(mask, plane, K, depth=None, conf=None, inset_mm=6.0, body_only=Tr
         ahead = np.isfinite(depth) & (on_plane - depth > proud)
         if conf is not None:
             ahead &= conf >= 1
-        ahead = ahead.astype(np.uint8)
+        # judged on the cello only: the bow joins up with the player's arm
+        # outside it, which is wide, and took the thin stick along
+        on = cv2.resize(m.astype(np.uint8), (dw, dh), interpolation=cv2.INTER_NEAREST)
+        ahead = ahead.astype(np.uint8) & on
         n, lab, stats, _ = cv2.connectedComponentsWithStats(ahead, connectivity=8)
-        cm2 = (1000 * plane.C[2] / K[0, 0] * w / dw / 10) ** 2       # one depth pixel at the cello
-        small = np.flatnonzero(stats[1:, cv2.CC_STAT_AREA] * cm2 < min_proud_cm2) + 1
-        ahead[np.isin(lab, small)] = 0
+        mm_d = mm_px * w / dw                                         # one depth pixel at the cello, mm
+        small = np.flatnonzero(stats[1:, cv2.CC_STAT_AREA] * (mm_d / 10) ** 2 < min_proud_cm2) + 1
+        # thin ones (the bow) have no room for a proud_mm disc anywhere
+        k = max(1, int(round(proud_mm / mm_d)))
+        wide = cv2.morphologyEx(ahead, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)))
+        thin = np.setdiff1d(np.arange(1, n), np.unique(lab[wide > 0]))
+        ahead[np.isin(lab, np.union1d(small, thin))] = 0
         ahead = cv2.resize(ahead, (w, h), interpolation=cv2.INTER_NEAREST)[y0:y1, x0:x1]
         ahead = cv2.dilate(ahead, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * int(15 / mm_px) + 1,) * 2))
         keep &= 1 - ahead
