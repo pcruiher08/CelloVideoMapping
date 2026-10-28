@@ -313,8 +313,31 @@ def check_front_face():
     inset = np.median(dist_in[edge]) * mm_px
     kept = (face & body & (hand == 0)).sum() / (body & (hand == 0)).sum()
     ok = neck_lit < 0.02 and hand_lit < 0.02 and 4.5 < inset < 8.5 and kept > 0.85
-    return check("front face only", ok, f"neck lit {100 * neck_lit:.1f}%, hand lit {100 * hand_lit:.1f}%, "
-                 f"edge inset {inset:.1f} mm, body kept {100 * kept:.0f}%")
+    ok = check("front face only", ok, f"neck lit {100 * neck_lit:.1f}%, hand lit {100 * hand_lit:.1f}%, "
+               f"edge inset {inset:.1f} mm, body kept {100 * kept:.0f}%")
+
+    # a hole where the segmentation lost the bridge, and an arm covering
+    # most of the upper bout: the narrow strip left must not pass for the neck
+    holed = full.copy()
+    bridge = np.zeros_like(mask, np.uint8)
+    cv2.fillPoly(bridge, [to_px(np.array([[-0.05, -0.02], [0.05, -0.02], [0.05, -0.06], [-0.05, -0.06]]))], 1)
+    holed[bridge > 0] = 0
+    arm = np.zeros_like(mask, np.uint8)
+    cv2.fillPoly(arm, [to_px(np.array([[-0.3, 0.05], [0.07, 0.05], [0.07, 0.5], [-0.3, 0.5]]))], 1)
+    holed[(arm > 0) & (neck == 0)] = 0
+    upper = (holed > 0.5) & body & (np.arange(mask.shape[0])[:, None] < to_px(np.array([[0, 0.05]]))[0][1])
+    # the axis as the tracker would hold it: from before the arm came in
+    c0, c1 = to_px(np.array([[0.0, 0.0], [0.0, 0.3]]))
+    axis = (c0[0], c0[1], np.arctan2(c1[1] - c0[1], c1[0] - c0[0]))
+    face2 = front_face(holed, plane, K_CAM, None, None, inset_mm=6.0, axis=axis)
+    core = cv2.erode((bridge > 0).astype(np.uint8), np.ones((9, 9), np.uint8)) > 0
+    bridge_lit = (face2 & core).sum() / max(1, core.sum())
+    upper_lit = (face2 & upper).sum() / max(1, upper.sum())
+    neck_lit2 = (face2 & (neck > 0) & ~body).sum() / max(1, ((neck > 0) & ~body).sum())
+    return ok & check("front face: holes, covered upper bout", bridge_lit > 0.95 and upper_lit > 0.75
+                      and neck_lit2 < 0.02,
+                      f"bridge hole lit {100 * bridge_lit:.0f}%, uncovered upper bout lit "
+                      f"{100 * upper_lit:.0f}%, neck lit {100 * neck_lit2:.1f}%")
 
 
 def main():

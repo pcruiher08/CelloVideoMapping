@@ -21,6 +21,7 @@ import cv2
 import numpy as np
 
 from .cello3d import CelloPlane, front_face
+from .predict import PlanePredictor, PosePredictor, apply_axis, apply_mask
 from .composite import composite, debug_overlay, mask_roi, shape_alpha
 from .iphone import IPHONE, depth_view
 from .procam3d import Procam3D, correspondences, implausible3d, solve_projector, stable_depth
@@ -60,6 +61,7 @@ DEFAULTS = {
     "mapping": "3d",         # 3d (iPhone depth + 3D calibration, follows lean/turn) | flat
     "surface": "front",      # front (the body's top only, from depth) | whole (the full mask)
     "inset_mm": 6.0,         # front: edge pulled in so no light reaches the ribs
+    "predict_ms": 250,       # draw the cello this far ahead of its capture (0 = off); the light lags ~350 ms
 }
 
 
@@ -330,6 +332,9 @@ class Pipeline(threading.Thread):
         self.depth_pkt = None          # iPhone packet (depth, intrinsics) of the latest frame
         self.plane = CelloPlane()      # the cello's surface from that depth
         self.plane_t = 0.0             # when the plane was last fitted
+        self.pose_pred = PosePredictor()   # where the cello will be when the light lands
+        self.plane_pred = PlanePredictor()
+        self.t_meas = 0.0              # capture time of the frame being drawn (Mac clock)
         self.view3d = None             # (K, quad) used for the current frame, or None (flat)
         self.proj_meta = {}            # proj_seq -> phone frame times, for the latency readout
         self.lat = {}                  # Mac-side latency stages, smoothed (seconds)
@@ -527,8 +532,12 @@ class Pipeline(threading.Thread):
                 np.max(np.stack([d["mask"] for d in inst]), 0)
         mask = self.smoother(raw, frame.shape[:2])
         now = time.time()
+        # filters run on capture time: frames arrive unevenly over Wi-Fi
+        self.t_meas = (pkt.get("t_cap_mac") if pkt is not None else None) or now
         axis = self.axis(mask, now) if mask is not None else None
         quad = self.update_3d(frame, mask, axis, pkt, s, now)
+        if not self.pose_pred.update(mask, self.t_meas) and mask is None:
+            self.pose_pred.reset()
         # what gets light: the front face when depth allows, else the mask
         face = self.front_mask(mask, pkt, s)
         self.face = face
@@ -536,7 +545,7 @@ class Pipeline(threading.Thread):
         self.raw_seq += 1
         if self.projector_window or self.watched("projector"):
             try:
-                pf = self.render_projector(frame, face, axis, repl, s, quad)
+                pf = self.render_projector(frame, *self.ahead(face, axis, quad, s), repl, s)
             except Exception as e:       # never let the projector stop the loop
                 print(f"projector: {e!r}")
                 pf = np.zeros((self.proj_size[1], self.proj_size[0], 3), np.uint8)
@@ -609,6 +618,7 @@ class Pipeline(threading.Thread):
             K[:2] *= w / pkt["size"][0]
         if self.plane(mask, pkt, now):
             self.plane_t = now
+            self.plane_pred.update(*self.plane.raw, self.t_meas)
         if self.plane.n is None or now - self.plane_t > 2.0:
             return None                  # no depth on the cello for a while: flat for now
         quad = None
@@ -625,14 +635,37 @@ class Pipeline(threading.Thread):
         if mask is None or self.view3d is None or s["surface"] != "front":
             return mask
         try:
+            a = self.axis.last
             face = front_face(mask, self.plane, self.view3d[0], pkt["depth"], pkt["conf"],
-                              inset_mm=s["inset_mm"])
+                              inset_mm=s["inset_mm"], axis=None if a is None else (a[0], a[1], a[4]))
         except Exception as e:               # never let it blank the projection
             print(f"front face: {e!r}")
             return mask
         return np.where(face, mask, 0).astype(np.float32)
 
-    def render_projector(self, frame, mask, axis, repl, s, quad=None):
+    def ahead(self, face, axis, quad, s):
+        """(mask, axis, quad, plane) moved to where the cello will be when the
+        projector's light lands: `predict_ms` after the frame's capture
+        (predict.py). Unchanged with prediction off."""
+        lead = s["predict_ms"] / 1000
+        if lead <= 0 or face is None:
+            return face, axis, quad, None
+        t = self.t_meas + lead
+        A = self.pose_pred.delta(t)
+        face, axis = apply_mask(A, face), apply_axis(A, axis)
+        plane = None
+        if self.view3d is not None:
+            at = self.plane_pred.at(t)
+            if at is not None:
+                plane = self.plane.moved(*at)
+                if quad is not None and axis is not None:
+                    try:
+                        quad = plane.quad(axis, self.view3d[0])
+                    except (FloatingPointError, ValueError, ZeroDivisionError):
+                        pass
+        return face, axis, quad, plane
+
+    def render_projector(self, frame, mask, axis, quad, plane, repl, s):
         """The image the projector shows. Graphics are drawn in camera space
         inside the cello mask on black, then warped into projector space:
         by the cello's 3D plane and the 3D projector model when the iPhone's
@@ -674,7 +707,7 @@ class Pipeline(threading.Thread):
                             inward=True)
         if self.view3d is not None:
             K = self.view3d[0]
-            H = self.plane.homography(self.procam_live or self.procam, K, roi)
+            H = (plane or self.plane).homography(self.procam_live or self.procam, K, roi)
             if self.calib is not None:               # the Shift / Scale nudge still applies
                 H = self.calib.nudge() @ H
             return Calibration(H, self.proj_size).warp(cam, roi)

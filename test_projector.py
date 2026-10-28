@@ -70,6 +70,9 @@ def main():
         args = argparse.Namespace(source=sample, model=None, imgsz=512, width=1280,
                                   height=720, proj_size=list(PROJ))
         pipe = server.Pipeline(args)
+        # this checks the mapping: no motion prediction (in the fake room the
+        # light itself changes how the cello looks, which can read as motion)
+        pipe.update({"predict_ms": 0})
         pipe.debug_dir = tempfile.mkdtemp(prefix="cello-test-")   # keep data/calib_debug real
         pipe.source = None
         cam = FakeCamera(pipe, board)

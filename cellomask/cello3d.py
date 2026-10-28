@@ -11,6 +11,8 @@ the cello's plane, so it foreshortens as the cello leans, rather than only
 being clipped by the silhouette.
 """
 
+import copy
+
 import cv2
 import numpy as np
 
@@ -29,6 +31,7 @@ class CelloPlane:
 
     def reset(self):
         self.C = self.n = None
+        self.raw = None
         self.f = None
         self.points = 0
         self.residual = None
@@ -61,6 +64,7 @@ class CelloPlane:
         C, n, res, kept = fit
         if abs(n[0]) > 0.94 or abs(n[1]) > 0.94:
             return False                 # over 70 degrees from facing the camera: not the cello's front
+        self.raw = (C, n)                # unsmoothed, for the motion predictor
         if self.f is None:
             # slow when still (no shimmer), quick when the cello moves. beta
             # is per unit of speed: m/s for the centre, rad/s for the normal,
@@ -94,6 +98,12 @@ class CelloPlane:
         if n @ C > 0:                      # face the camera
             n = -n
         return C, n, float(np.sqrt(np.mean(d[keep] ** 2))), int(keep.sum())
+
+    def moved(self, C, n):
+        """A copy of this plane at another centre and normal (a prediction)."""
+        p = copy.copy(self)
+        p.C, p.n = np.asarray(C, np.float64), np.asarray(n, np.float64)
+        return p
 
     def point(self, uv, K):
         """Camera pixels -> 3D points on the plane."""
@@ -147,15 +157,24 @@ class CelloPlane:
 
 
 def front_face(mask, plane, K, depth=None, conf=None, inset_mm=6.0, body_only=True,
-               proud=0.04, neck_mm=140.0, min_neck_cm2=60.0, scale=4):
+               proud=0.06, min_proud_cm2=20.0, neck_mm=140.0, min_neck_cm2=60.0, scale=4,
+               axis=None, neck_off_mm=60.0):
     """The part of the mask that is the cello's front face, for projecting on.
 
+    - holes in the mask (where the segmentation lost the bridge, or the bow
+      crossed) are filled: the top is there under them.
     - body_only: the neck and scroll are cut off. They are narrower than a
       disc of `neck_mm`, which the body (upper bout ~34 cm, waist ~23 cm) is
       not, so an opening with that disc leaves the body; only large removed
-      pieces are dropped (the C-bout corners are removed too but are small).
+      pieces centred on the cello's long axis (within `neck_off_mm`) are
+      dropped. `axis` is (cx, cy, up angle) in image pixels, from the
+      AxisTracker; without it the mask's own. A strip of upper bout left
+      narrow by an arm covering the rest is off to the side, and stays.
     - proud: depth more than this (metres) in front of the cello's plane is
-      not the top (a hand, the bow, the fingerboard towards the nut).
+      not the top (a hand, the bow, the fingerboard towards the nut), when
+      it covers at least `min_proud_cm2`. The arched top and fingerboard
+      already stand ~3 cm off the plane: at 4 cm one noisy depth frame
+      blanked a patch of the lower bout.
     - inset_mm: the edge is pulled in so the light never reaches the ribs
       or the wall past them, whatever the segmentation and calibration error.
 
@@ -171,6 +190,11 @@ def front_face(mask, plane, K, depth=None, conf=None, inset_mm=6.0, body_only=Tr
     x0, y0 = max(0, xs.min() - pad), max(0, ys.min() - pad)
     x1, y1 = min(w, xs.max() + 1 + pad), min(h, ys.max() + 1 + pad)
     sub = m[y0:y1, x0:x1].astype(np.uint8)
+    # fill enclosed holes: whatever the background flood from the border
+    # cannot reach (the box has a margin, so its border is background)
+    flood = sub.copy()
+    cv2.floodFill(flood, np.zeros((y1 - y0 + 2, x1 - x0 + 2), np.uint8), (0, 0), 1)
+    sub |= 1 - flood
     small = cv2.resize(sub, ((x1 - x0) // scale + 1, (y1 - y0) // scale + 1), interpolation=cv2.INTER_AREA)
     mm_s = mm_px * scale
     keep = sub.copy()
@@ -181,8 +205,20 @@ def front_face(mask, plane, K, depth=None, conf=None, inset_mm=6.0, body_only=Tr
                                 cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1,) * 2))
         if body.any():
             rest = (small > 0) & (body == 0)
-            n, lab, stats, _ = cv2.connectedComponentsWithStats(rest.astype(np.uint8), connectivity=8)
+            n, lab, stats, cents = cv2.connectedComponentsWithStats(rest.astype(np.uint8), connectivity=8)
             big = np.flatnonzero(stats[1:, cv2.CC_STAT_AREA] * (mm_s / 10) ** 2 > min_neck_cm2) + 1
+            # only pieces whose middle is on the long axis (the neck runs
+            # along it; a leftover strip of upper bout is off to one side)
+            if axis is None:
+                mm = cv2.moments(sub, binaryImage=True)
+                c = np.array([mm["m10"], mm["m01"]]) / max(mm["m00"], 1)
+                ev = np.linalg.eigh(np.array([[mm["mu20"], mm["mu11"]], [mm["mu11"], mm["mu02"]]]))[1][:, 1]
+                up = np.arctan2(ev[1], ev[0])
+            else:
+                c, up = np.array([axis[0] - x0, axis[1] - y0]), axis[2]
+            c = c / scale
+            across = np.array([-np.sin(up), np.cos(up)])
+            big = big[np.abs((cents[big] - c) @ across) < neck_off_mm / mm_s]
             if len(big):
                 drop = np.isin(lab, big).astype(np.uint8)
                 drop = cv2.resize(drop, (x1 - x0, y1 - y0), interpolation=cv2.INTER_NEAREST)
@@ -198,7 +234,11 @@ def front_face(mask, plane, K, depth=None, conf=None, inset_mm=6.0, body_only=Tr
         ahead = np.isfinite(depth) & (on_plane - depth > proud)
         if conf is not None:
             ahead &= conf >= 1
-        ahead = cv2.morphologyEx(ahead.astype(np.uint8), cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
+        ahead = ahead.astype(np.uint8)
+        n, lab, stats, _ = cv2.connectedComponentsWithStats(ahead, connectivity=8)
+        cm2 = (1000 * plane.C[2] / K[0, 0] * w / dw / 10) ** 2       # one depth pixel at the cello
+        small = np.flatnonzero(stats[1:, cv2.CC_STAT_AREA] * cm2 < min_proud_cm2) + 1
+        ahead[np.isin(lab, small)] = 0
         ahead = cv2.resize(ahead, (w, h), interpolation=cv2.INTER_NEAREST)[y0:y1, x0:x1]
         ahead = cv2.dilate(ahead, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * int(15 / mm_px) + 1,) * 2))
         keep &= 1 - ahead

@@ -133,7 +133,8 @@
         <button data-v="whole">Whole cello</button>
       </div>
       <div class="row"><label for="inset_mm">Edge inset (mm)</label><input type="range" id="inset_mm" min="0" max="20" step="1"><output></output></div>
-      <p class="hint">Front face (3D only): no light on the neck, scroll, a hand or the bow in front of the top, and the edge pulled in so none reaches the ribs or the wall.</p>
+      <div class="row"><label for="predict_ms">Predict ahead (ms)</label><input type="range" id="predict_ms" min="0" max="450" step="25"><output></output></div>
+      <p class="hint">Front face (3D only): no light on the neck, scroll, a hand or the bow in front of the top, and the edge pulled in so none reaches the ribs or the wall. Predict ahead: the light reaches the cello ~350 ms after the phone sees it; the mapping is moved to where the cello will be by then (0 = off; less overshoots less when the player stops suddenly).</p>
       <button class="btn" id="calibrate3d" style="width:100%">Calibrate 3D (iPhone LiDAR, ~25 s)</button>
       <p class="hint">Needs the iPhone LiDAR source (CelloDepth app → Connect, phone mounted beside the projector). Solves the projector's lens and position in 3D from the stripes plus depth; the lit area must include different depths (cello in front of the wall, some floor). Also refits the flat mapping above.</p>
       <img id="calibView" alt="What the camera saw when calibrating" hidden style="width:100%;margin-top:8px;border-radius:8px;border:1px solid var(--line)">
@@ -216,7 +217,7 @@ let view = localStorageGet('view') || 'output';
 function localStorageGet(k) { try { return localStorage.getItem(k); } catch { return null; } }
 function localStorageSet(k, v) { try { localStorage.setItem(k, v); } catch {} }
 
-const SLIDERS = ['opacity', 'inset_mm', 'feather', 'grow', 'conf', 'smooth', 'a4', 'tuner_span', 'tuner_seconds', 'tuner_pos'];
+const SLIDERS = ['opacity', 'inset_mm', 'predict_ms', 'feather', 'grow', 'conf', 'smooth', 'a4', 'tuner_span', 'tuner_seconds', 'tuner_pos'];
 
 const MODE_HINTS = {
   warp: 'Image rides on the cello: rotates with it, top of the image at the scroll.',
