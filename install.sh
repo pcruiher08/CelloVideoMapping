@@ -6,7 +6,9 @@
 #   PYTHON=/path/to/python3.12 ./install.sh   # use a specific interpreter
 #
 # Works on macOS (Apple Silicon uses the GPU via MPS) and Linux (CUDA if an
-# NVIDIA driver is present, otherwise CPU). Needs Python 3.10-3.13.
+# NVIDIA driver is present, otherwise CPU). Needs Python 3.10-3.13; the
+# TouchDesigner links need macOS 13+ (NDI) and 12+ (Syphon). The NDI runtime
+# comes inside the cyndilib package: nothing else to install.
 
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -84,6 +86,22 @@ print(f"    python {__import__('sys').version.split()[0]}, torch {torch.__versio
       f"ultralytics {ultralytics.__version__}, opencv {cv2.__version__}, "
       f"numpy {numpy.__version__}")
 print(f"    inference device: {dev}" + ("  (no GPU found: expect a low frame rate)" if dev == "cpu" else ""))
+EOF
+
+say "Checking the TouchDesigner links (NDI, Syphon, OSC)"
+"$VENV/bin/python" - <<'EOF' || say "Warning: NDI / Syphon not available; the rest of the app works (see above)"
+import sys
+ok = True
+for mod, what in (("cyndilib", "NDI video in (TouchDesigner on another computer)"),
+                  ("syphon", "Syphon video in (TouchDesigner on this Mac)"),
+                  ("pythonosc", "OSC out to TouchDesigner")):
+    try:
+        __import__(mod)
+        print(f"    {what}: ok")
+    except Exception as e:
+        ok = False
+        print(f"    {what}: NOT available ({e})")
+sys.exit(0 if ok else 1)
 EOF
 
 sha requirements.txt > "$STAMP"

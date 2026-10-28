@@ -214,6 +214,55 @@ unzip cellotracking-*.zip && cd cellotracking-*
   Windows is not covered by these scripts (use WSL2 or install by hand).
 - Plugged in a camera after starting? Restart: OpenCV numbers cameras at start-up.
 
+## TouchDesigner (visuals on the cello)
+
+The visuals come from TouchDesigner; this app puts them on the cello's front
+face (segmentation, 3D mapping, prediction, learned outline) and drives the
+projector. It also sends the cello's state to TouchDesigner over OSC.
+
+**Video in**, in TouchDesigner after the final visual:
+
+- **Syphon Spout Out TOP** when TouchDesigner runs on this same Mac (GPU
+  sharing, no compression, ~1 frame of delay). Name the sender, e.g.
+  `visuales_cello`; it appears here as `TouchDesigner / visuales_cello`.
+- **NDI Out TOP** when it runs on another computer. Wired Ethernet is best;
+  Wi-Fi works with a smaller image. If the two computers are on different
+  subnets (NDI cannot find the sender), list the sender's IP in
+  `~/.ndi/ndi-config.v1.json`: `{"ndi": {"networks": {"ips": "10.22.162.39"}}}`.
+  A VPN exit node (Tailscale) can also swallow the traffic: turn it off.
+
+In the web page: **TouchDesigner → Find NDI / Syphon senders**, then click
+the sender's tile in the gallery. A portrait texture (about 1:2.4, e.g.
+720x1728) fits the cello best. The choice is remembered across restarts
+(`data/settings.json`), and the app waits for the sender if it is not up yet.
+
+**OSC out**, every frame, to the address in *OSC to* (`127.0.0.1` when
+TouchDesigner is on this Mac), port 9000 by default, for an **OSC In CHOP**:
+`/cello/present x y angle size distance lean turn covered`,
+`/tuner/freq note cents level`, `/vibrato/rate extent` (see
+`cellomask/live.py`).
+
+### Moving the project to the TouchDesigner Mac
+
+```bash
+# here
+./package.sh --live "syphon:TouchDesigner / visuales_cello" --osc 127.0.0.1
+# copy dist/cellotracking-*.zip over, then there:
+unzip cellotracking-*.zip && cd cellotracking-*
+./show.sh          # installs on first run (internet, a few minutes), then starts
+```
+
+- The zip carries this rig's calibrations (projector, iPhone position, the
+  learned cello outline) and settings. They hold while the projector and
+  the iPhone stay put; otherwise press **Calibrate 3D** there (it also
+  relearns the outline, with the cello alone).
+- The projector's HDMI goes to that Mac, set to **extend**.
+- In the **CelloDepth** app on the iPhone, enter that Mac's address and port
+  8000 (`show.sh` prints it).
+- Needs macOS 13+ and Python 3.10-3.13 (fetched automatically if missing);
+  the NDI runtime comes with the `cyndilib` package.
+- `test_live.py` checks NDI, Syphon and OSC on one Mac with stand-in senders.
+
 ## Cello replacement (`cellomask/`)
 
 Instance-segments the cello with a fine-tuned **YOLO26-seg** model and puts a

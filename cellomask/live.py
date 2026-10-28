@@ -22,6 +22,7 @@ import numpy as np
 NDI_PREFIX = "ndi:"
 SYPHON_PREFIX = "syphon:"
 MAX_SIDE = 1600          # like still images: bigger only costs time
+MAX_FPS = 30             # the projection draws 15-30 frames a second: more is wasted CPU
 
 
 def _fit(img):
@@ -158,7 +159,9 @@ class NDIMedia(LiveMedia):
                     stride = vf.get_line_stride() or w * 4
                     img = a[: h * stride].reshape(h, stride)[:, : w * 4].reshape(h, w, 4)
                     self._got(np.ascontiguousarray(img[..., :3]))
-                time.sleep(0.004)
+                    time.sleep(1 / MAX_FPS)
+                else:
+                    time.sleep(0.004)
         finally:
             rx.disconnect()
 
@@ -192,9 +195,13 @@ class SyphonMedia(LiveMedia):
         d = syphon.SyphonServerDirectory()
         d.run_loop_interval = 0.05
         desc = None
+        want = self.source.split(" / ")[-1]
         while self.running and desc is None:
             for s in d.servers:
-                if (f"{s.app_name} / {s.name}" if s.name else s.app_name) == self.source:
+                full = f"{s.app_name} / {s.name}" if s.name else s.app_name
+                # the exact "App / Server", else the same server name from
+                # any app (TouchDesigner's app name varies between versions)
+                if full == self.source or (desc is None and s.name and s.name == want):
                     desc = s
             if desc is None:
                 self.error = "not running (yet)"
@@ -213,6 +220,7 @@ class SyphonMedia(LiveMedia):
                     else:
                         bgr = np.ascontiguousarray(img[..., :3])
                     self._got(bgr)
+                    time.sleep(1 / MAX_FPS)
                 else:
                     d.update_run_loop()          # lets the client hear about frames
         finally:

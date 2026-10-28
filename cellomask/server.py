@@ -11,6 +11,7 @@ Resolume/TouchDesigner).
 """
 
 import argparse
+import json
 import os
 import re
 import shutil
@@ -394,9 +395,52 @@ class Pipeline(threading.Thread):
             print(f"warning: {e}; using the built-in camera instead")
             self.set_source("auto")
             self.error = f"{e}: using the built-in camera. Plug it in and restart."
-        default = os.path.join(REPL_DIR, "test-grid.png")
-        if os.path.exists(default):
-            self.set_replacement(default)
+        # settings and the image on the cello as they were left (a show
+        # machine comes back the same after a restart); only the server
+        # remembers, tests start from the defaults
+        self.settings_path = getattr(args, "settings_file", None)
+        saved = self._load_settings()
+        last = saved.get("replacement") or ""
+        if last.startswith(("ndi:", "syphon:")) or last == TUNER:
+            self.set_replacement(last)       # waits for TouchDesigner if it is not up yet
+        elif last and os.path.exists(os.path.join(REPL_DIR, last)):
+            self.set_replacement(os.path.join(REPL_DIR, last))
+        else:
+            default = os.path.join(REPL_DIR, "test-grid.png")
+            if os.path.exists(default):
+                self.set_replacement(default)
+        self.saving = True
+
+    def scan_live(self):
+        """Look for NDI senders on the network and Syphon servers on this Mac."""
+        self.live_found = {"ndi": ndi_sources(wait=1.5), "syphon": syphon_sources(), "when": time.time()}
+
+    def _load_settings(self):
+        self.saving = False
+        if not self.settings_path or not os.path.exists(self.settings_path):
+            return {}
+        try:
+            with open(self.settings_path) as f:
+                saved = json.load(f)
+        except (OSError, ValueError) as e:
+            print(f"settings: {e!r}; starting from the defaults")
+            return {}
+        self.update({k: v for k, v in saved.get("settings", {}).items() if k in DEFAULTS})
+        return saved
+
+    def save_settings(self):
+        if not self.settings_path or not getattr(self, "saving", False):
+            return
+        r = self.replacement
+        data = {"settings": self.settings,
+                "replacement": r.name if r is not None else None}
+        try:
+            tmp = self.settings_path + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(data, f, indent=1)
+            os.replace(tmp, self.settings_path)
+        except OSError as e:
+            print(f"settings not saved: {e!r}")
 
     # --- control -----------------------------------------------------------
 
@@ -444,6 +488,7 @@ class Pipeline(threading.Thread):
             if self.replacement is not None:
                 self.replacement.close()
             self.replacement = media
+        self.save_settings()
 
     def update(self, values):
         with self.lock:
@@ -455,6 +500,7 @@ class Pipeline(threading.Thread):
             self.axis.follow = self.settings["rotation"] == "follow"
             if self.tuner is not None:
                 self.tuner.a4 = self.settings["a4"]
+        self.save_settings()
 
     # --- loop --------------------------------------------------------------
 
@@ -1400,7 +1446,7 @@ def build_app(pipe):
     def live_scan():
         """Look for NDI senders on the network and Syphon servers on this
         Mac (TouchDesigner's NDI Out / Syphon Spout Out TOPs)."""
-        pipe.live_found = {"ndi": ndi_sources(wait=1.5), "syphon": syphon_sources(), "when": time.time()}
+        pipe.scan_live()
         return live_state()
 
     def tuner_state(pipe):
@@ -1659,6 +1705,8 @@ def main(argv=None):
                         "the extended projector display) or a screen index")
     p.add_argument("--windowed", action="store_true",
                    help="projector window in a normal window instead of fullscreen")
+    p.add_argument("--settings-file", default=os.path.join(ROOT, "data", "settings.json"),
+                   help="where the web page's settings and the chosen image are remembered")
     p.add_argument("--proj-size", type=int, nargs=2, default=[1280, 800],
                    metavar=("W", "H"), help="projector resolution when no window "
                    "is open (the window uses its screen's size)")
@@ -1666,6 +1714,8 @@ def main(argv=None):
 
     seed_media()
     pipe = Pipeline(args)
+    # TouchDesigner's senders in the gallery from the start, without "Find"
+    threading.Thread(target=pipe.scan_live, daemon=True).start()
     print(f"model {pipe.seg.name} on {pipe.seg.device}; source {pipe.source_name}")
     print(f"open http://{args.host}:{args.port}  (projector feed: /output)")
 
