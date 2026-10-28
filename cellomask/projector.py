@@ -259,7 +259,8 @@ def implausible(H, px, py, use, proj_size, min_agree=0.5, tol=20.0):
         return f"only {100 * agree:.0f}% of the decoded pixels agree with the fit"
     c = cam.mean(0)
     a, bx, by = cv2.perspectiveTransform(np.float32([[c, c + (1, 0), c + (0, 1)]]), H)[0]
-    if np.cross(bx - a, by - a) <= 0:
+    u, v = bx - a, by - a
+    if u[0] * v[1] - u[1] * v[0] <= 0:            # 2D cross (numpy 2 dropped np.cross for 2D)
         return "the fit mirrors the image"
     w, h = proj_size
     if not (-0.1 * w <= a[0] <= 1.1 * w and -0.1 * h <= a[1] <= 1.1 * h):

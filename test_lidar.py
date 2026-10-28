@@ -209,7 +209,7 @@ def check_tilts():
     for k in range(10):
         plane(mask, pkt, k / 30)
     ys, xs = np.nonzero(mask > 0)
-    axis = (xs.mean(), ys.mean(), ys.ptp(), xs.ptp(), -np.pi / 2)
+    axis = (xs.mean(), ys.mean(), np.ptp(ys), np.ptp(xs), -np.pi / 2)
     q, _ = plane.quad(axis, K_CAM)
     top, bottom = np.linalg.norm(q[1] - q[0]), np.linalg.norm(q[2] - q[3])
     ok_q = top < bottom * 0.98
