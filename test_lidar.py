@@ -17,6 +17,7 @@ import os
 import struct
 import sys
 import time
+import zlib
 
 import cv2
 import numpy as np
@@ -110,16 +111,24 @@ def check(name, ok, detail):
     return ok
 
 
-def message(bgr, depth, K, orientation):
-    """A CelloDepth stream message, as the iPhone app builds it."""
-    jpeg = cv2.imencode(".jpg", bgr, [cv2.IMWRITE_JPEG_QUALITY, 95])[1].tobytes()
+def message(bgr, depth, K, orientation, compact=False):
+    """A CelloDepth stream message, as the iPhone app builds it. `compact`:
+    as the current app sends it, the JPEG at 3/4 size (K and w x h still
+    describe the full image) and depth + confidence deflated."""
+    small = cv2.resize(bgr, None, fx=0.75, fy=0.75, interpolation=cv2.INTER_AREA) if compact else bgr
+    jpeg = cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, 95])[1].tobytes()
     d16 = depth.astype(np.float16).tobytes()
     conf = np.full(depth.shape, 2, np.uint8).tobytes()
     hd = {"w": bgr.shape[1], "h": bgr.shape[0], "fx": K[0, 0], "fy": K[1, 1], "cx": K[0, 2],
           "cy": K[1, 2], "dw": depth.shape[1], "dh": depth.shape[0], "ts": 0.0,
           "orientation": orientation, "jpeg": len(jpeg), "depth": len(d16), "conf": len(conf)}
+    block = d16 + conf
+    if compact:
+        c = zlib.compressobj(6, zlib.DEFLATED, -15)
+        block = c.compress(block) + c.flush()
+        hd["z"] = len(block)
     h = json.dumps(hd).encode()
-    return b"CDP1" + struct.pack("<I", len(h)) + h + jpeg + d16 + conf
+    return b"CDP1" + struct.pack("<I", len(h)) + h + jpeg + block
 
 
 def pose(lean, turn, dist):
@@ -266,6 +275,48 @@ def check_relocate():
     return check("phone movement recovered", ok, "; ".join(rows))
 
 
+def check_front_face():
+    """The front face drops the neck and scroll, a hand held in front of
+    the top, and pulls the edge in by the inset, on a leaning cello."""
+    from cellomask.cello3d import CelloPlane, front_face
+    mask, pkt, X = render_plane(15, 5, 1.9)
+    plane = CelloPlane()
+    assert plane(mask, pkt, 0.0)
+    C, R = pose(15, 5, 1.9)
+
+    def to_px(pts):
+        P = C + pts[:, :1] * R[:, 0] - pts[:, 1:] * R[:, 1]
+        uv = (K_CAM @ P.T).T
+        return np.round(uv[:, :2] / uv[:, 2:]).astype(np.int32)
+
+    body = mask > 0.5
+    # neck (6 cm wide, 30 cm) and scroll above the body, on the same plane
+    neck = np.zeros_like(mask, np.uint8)
+    cv2.fillPoly(neck, [to_px(np.array([[-0.03, 0.36], [0.03, 0.36], [0.03, 0.70], [-0.03, 0.70]]))], 1)
+    cv2.circle(neck, tuple(to_px(np.array([[0.0, 0.74]]))[0]), int(0.05 * K_CAM[0, 0] / 1.9), 1, -1)
+    full = np.maximum(mask, neck.astype(np.float32))
+    # a hand 15 cm in front of the lower bout
+    hand_c = to_px(np.array([[0.08, -0.18]]))[0]
+    hand = np.zeros_like(mask, np.uint8)
+    cv2.circle(hand, tuple(hand_c), int(0.05 * K_CAM[0, 0] / 1.9), 1, -1)
+    dh, dw = pkt["depth"].shape
+    small = cv2.resize(hand, (dw, dh), interpolation=cv2.INTER_NEAREST) > 0
+    pkt["depth"] = np.where(small, pkt["depth"] - 0.15, pkt["depth"]).astype(np.float32)
+    face = front_face(full, plane, K_CAM, pkt["depth"], pkt["conf"], inset_mm=6.0)
+
+    neck_lit = (face & (neck > 0) & ~body).sum() / max(1, ((neck > 0) & ~body).sum())
+    hand_lit = (face & (hand > 0)).sum() / hand.sum()
+    # inset: distance from the body's edge to the face's, in mm on the cello
+    mm_px = 1000 * plane.C[2] / K_CAM[0, 0]
+    dist_in = cv2.distanceTransform(body.astype(np.uint8), cv2.DIST_L2, 5)
+    edge = face & (cv2.erode(face.astype(np.uint8), np.ones((3, 3), np.uint8)) == 0) & body
+    inset = np.median(dist_in[edge]) * mm_px
+    kept = (face & body & (hand == 0)).sum() / (body & (hand == 0)).sum()
+    ok = neck_lit < 0.02 and hand_lit < 0.02 and 4.5 < inset < 8.5 and kept > 0.85
+    return check("front face only", ok, f"neck lit {100 * neck_lit:.1f}%, hand lit {100 * hand_lit:.1f}%, "
+                 f"edge inset {inset:.1f} mm, body kept {100 * kept:.0f}%")
+
+
 def main():
     sys.path.insert(0, ROOT)
     from cellomask import iphone, server
@@ -281,8 +332,9 @@ def main():
     cv2.circle(img, tuple(np.round(uv).astype(int)), 6, (255, 255, 255), -1)
     depth = cv2.resize(z, (256, 192), interpolation=cv2.INTER_AREA)
     worst = 0.0
-    for o in ("landscapeLeft", "portrait", "landscapeRight", "portraitUpsideDown"):
-        pkt = iphone.parse(message(img, depth, K_CAM, o))
+    for o, compact in (("landscapeLeft", False), ("portrait", False), ("landscapeRight", False),
+                       ("portraitUpsideDown", False), ("landscapeLeft", True), ("portrait", True)):
+        pkt = iphone.parse(message(img, depth, K_CAM, o, compact))
         m = cv2.moments(cv2.cvtColor(pkt["bgr"], cv2.COLOR_BGR2GRAY))
         seen = np.array([m["m10"] / m["m00"], m["m01"] / m["m00"]])
         want = (pkt["K"] @ (P if o == "landscapeLeft" else P))[:2] / P[2]
@@ -294,6 +346,11 @@ def main():
         Pr = Rz @ P
         want = (pkt["K"] @ Pr)[:2] / Pr[2]
         worst = max(worst, float(np.linalg.norm(seen - want)))
+    pkt = iphone.parse(message(img, depth, K_CAM, "landscapeLeft", compact=True))
+    same = np.array_equal(pkt["depth"], depth.astype(np.float16).astype(np.float32)) and \
+        pkt["bgr"].shape[:2] == img.shape[:2] and (pkt["conf"] == 2).all()
+    ok &= check("compact stream (small JPEG, deflate)", same,
+                f"depth and confidence exact, image back at {pkt['bgr'].shape[1]}x{pkt['bgr'].shape[0]}")
     ok &= check("stream parsing + orientations", worst < 1.0,
                 f"projected point vs where it appears after turning upright: max {worst:.2f} px")
 
@@ -301,6 +358,7 @@ def main():
     #    the mask and depth are rendered from a known cello-shaped plane)
     ok &= check_tilts()
     ok &= check_relocate()
+    ok &= check_front_face()
 
     # 3. closed-loop 3D calibration through the real Pipeline
     backups = {p: open(p).read() for p in (CALIB_PATH, PROCAM_PATH) if os.path.exists(p)}

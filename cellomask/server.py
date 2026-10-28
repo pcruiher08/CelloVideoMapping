@@ -20,7 +20,7 @@ import time
 import cv2
 import numpy as np
 
-from .cello3d import CelloPlane
+from .cello3d import CelloPlane, front_face
 from .composite import composite, debug_overlay, mask_roi, shape_alpha
 from .iphone import IPHONE, depth_view
 from .procam3d import Procam3D, correspondences, implausible3d, solve_projector, stable_depth
@@ -58,6 +58,8 @@ DEFAULTS = {
     "tuner_layout": "horizontal",  # horizontal (time left->right) | vertical
     "tuner_pos": 0.2,        # in-tune line within the visible body: 0 = top, 1 = bottom
     "mapping": "3d",         # 3d (iPhone depth + 3D calibration, follows lean/turn) | flat
+    "surface": "front",      # front (the body's top only, from depth) | whole (the full mask)
+    "inset_mm": 6.0,         # front: edge pulled in so no light reaches the ribs
 }
 
 
@@ -494,82 +496,92 @@ class Pipeline(threading.Thread):
         browser views, for each newly segmented frame."""
         threading.Thread(target=self.segment_loop, daemon=True).start()
         threading.Thread(target=self.relocate_loop, daemon=True).start()
-        t_prev = time.time()
+        self.t_prev = time.time()
         while self.running:
             with self.seg_cond:
                 self.seg_cond.wait_for(lambda: self.seg_out is not None or not self.running, 1.0)
                 item, self.seg_out = self.seg_out, None
             if item is None:
                 continue
-            frame, inst, s, pkt = item
-            self.depth_pkt = pkt
+            try:
+                self.render(*item)
+            except Exception as e:           # skip a bad frame, never stop the loop
+                print(f"render: {e!r}")
+                time.sleep(0.05)
+
+    def render(self, frame, inst, s, pkt):
+        """One segmented frame through to the projector and the views."""
+        self.depth_pkt = pkt
+        with self.lock:
+            repl_media = self.replacement
+        if isinstance(repl_media, TunerMedia):
+            repl = repl_media.frame(s["mode"], frame.shape)
+        else:
             with self.lock:
-                repl_media = self.replacement
-            if isinstance(repl_media, TunerMedia):
-                repl = repl_media.frame(s["mode"], frame.shape)
-            else:
-                with self.lock:
-                    repl = repl_media.frame() if repl_media else None
+                repl = repl_media.frame() if repl_media else None
 
-            self.n_instances = len(inst)
-            raw = None
-            if inst:
-                raw = largest_cello(inst) if s["instances"] == "largest" else \
-                    np.max(np.stack([d["mask"] for d in inst]), 0)
-            mask = self.smoother(raw, frame.shape[:2])
-            now = time.time()
-            axis = self.axis(mask, now) if mask is not None else None
-            quad = self.update_3d(frame, mask, axis, pkt, s, now)
-            self.raw_frame = frame
-            self.raw_seq += 1
-            if self.projector_window or self.watched("projector"):
-                try:
-                    pf = self.render_projector(frame, mask, axis, repl, s, quad)
-                except Exception as e:       # never let the projector stop the loop
-                    print(f"projector: {e!r}")
-                    pf = np.zeros((self.proj_size[1], self.proj_size[0], 3), np.uint8)
-                self.proj_frame = pf
-                self.proj_seq += 1
-                if pkt is not None and pkt.get("t_recv"):
-                    now2 = time.time()
-                    self._stage("wait", pkt["t_read"] - pkt["t_recv"])     # queued for segmentation
-                    self._stage("process", now2 - pkt["t_read"])           # segment + 3D + render
-                    self.proj_meta[self.proj_seq] = pkt.get("t_cap_mac")
-                    if len(self.proj_meta) > 64:
-                        self.proj_meta.pop(next(iter(self.proj_meta)))
+        self.n_instances = len(inst)
+        raw = None
+        if inst:
+            raw = largest_cello(inst) if s["instances"] == "largest" else \
+                np.max(np.stack([d["mask"] for d in inst]), 0)
+        mask = self.smoother(raw, frame.shape[:2])
+        now = time.time()
+        axis = self.axis(mask, now) if mask is not None else None
+        quad = self.update_3d(frame, mask, axis, pkt, s, now)
+        # what gets light: the front face when depth allows, else the mask
+        face = self.front_mask(mask, pkt, s)
+        self.face = face
+        self.raw_frame = frame
+        self.raw_seq += 1
+        if self.projector_window or self.watched("projector"):
+            try:
+                pf = self.render_projector(frame, face, axis, repl, s, quad)
+            except Exception as e:       # never let the projector stop the loop
+                print(f"projector: {e!r}")
+                pf = np.zeros((self.proj_size[1], self.proj_size[0], 3), np.uint8)
+            self.proj_frame = pf
+            self.proj_seq += 1
+            if pkt is not None and pkt.get("t_recv"):
+                now2 = time.time()
+                self._stage("wait", pkt["t_read"] - pkt["t_recv"])     # queued for segmentation
+                self._stage("process", now2 - pkt["t_read"])           # segment + 3D + render
+                self.proj_meta[self.proj_seq] = pkt.get("t_cap_mac")
+                if len(self.proj_meta) > 64:
+                    self.proj_meta.pop(next(iter(self.proj_meta)))
 
-            # the output view is only composited and encoded while someone
-            # watches it (projecting does not need it)
-            jo = None
-            if self.watched("output") or not self.projector_window:
-                bg = np.zeros_like(frame) if s["matte"] else None
-                out = composite(frame, mask, repl, mode=s["mode"], axis=axis,
-                                feather=s["feather"], grow=s["grow"],
-                                opacity=s["opacity"], blend=s["blend"], background=bg, quad=quad)
-                jo = cv2.imencode(".jpg", out, [cv2.IMWRITE_JPEG_QUALITY, 85])[1].tobytes()
-            # the mask view is only drawn and encoded while someone watches it
-            dbg = debug_overlay(frame, inst, mask, axis) if self.watched("debug") else None
+        # the output view is only composited and encoded while someone
+        # watches it (projecting does not need it)
+        jo = None
+        if self.watched("output") or not self.projector_window:
+            bg = np.zeros_like(frame) if s["matte"] else None
+            out = composite(frame, face, repl, mode=s["mode"], axis=axis,
+                            feather=s["feather"], grow=s["grow"],
+                            opacity=s["opacity"], blend=s["blend"], background=bg, quad=quad)
+            jo = cv2.imencode(".jpg", out, [cv2.IMWRITE_JPEG_QUALITY, 85])[1].tobytes()
+        # the mask view is only drawn and encoded while someone watches it
+        dbg = debug_overlay(frame, inst, mask, axis) if self.watched("debug") else None
 
-            dt = now - t_prev
-            t_prev = now
-            self.fps = 0.9 * self.fps + 0.1 * (1 / dt if dt > 0 else 0)
-            enc = [cv2.IMWRITE_JPEG_QUALITY, 85]
-            jd = cv2.imencode(".jpg", dbg, enc)[1].tobytes() if dbg is not None else None
-            jp = None
-            if self.watched("projector") and self.proj_frame is not None:
-                jp = cv2.imencode(".jpg", self.proj_frame, enc)[1].tobytes()
-            jt = None
-            if self.watched("tuner"):        # the graph on its own, landscape
-                self.ensure_tuner()
-                g = safe_render(self.tuner, (1280, 720), s)
-                jt = cv2.imencode(".jpg", g, enc)[1].tobytes()
-            jz = None
-            if pkt is not None and self.watched("depth"):
-                jz = cv2.imencode(".jpg", depth_view(pkt), enc)[1].tobytes()
-            with self.cond:
-                self.jpeg = {"output": jo, "debug": jd, "tuner": jt, "projector": jp, "depth": jz}
-                self.seq += 1
-                self.cond.notify_all()
+        dt = now - self.t_prev
+        self.t_prev = now
+        self.fps = 0.9 * self.fps + 0.1 * (1 / dt if dt > 0 else 0)
+        enc = [cv2.IMWRITE_JPEG_QUALITY, 85]
+        jd = cv2.imencode(".jpg", dbg, enc)[1].tobytes() if dbg is not None else None
+        jp = None
+        if self.watched("projector") and self.proj_frame is not None:
+            jp = cv2.imencode(".jpg", self.proj_frame, enc)[1].tobytes()
+        jt = None
+        if self.watched("tuner"):        # the graph on its own, landscape
+            self.ensure_tuner()
+            g = safe_render(self.tuner, (1280, 720), s)
+            jt = cv2.imencode(".jpg", g, enc)[1].tobytes()
+        jz = None
+        if pkt is not None and self.watched("depth"):
+            jz = cv2.imencode(".jpg", depth_view(pkt), enc)[1].tobytes()
+        with self.cond:
+            self.jpeg = {"output": jo, "debug": jd, "tuner": jt, "projector": jp, "depth": jz}
+            self.seq += 1
+            self.cond.notify_all()
 
     # --- projection mapping --------------------------------------------------
 
@@ -607,6 +619,19 @@ class Pipeline(threading.Thread):
                 quad = None
         return (K, quad)
 
+    def front_mask(self, mask, pkt, s):
+        """The front face of the cello (cello3d.front_face) as a soft mask,
+        or the mask itself without 3D or with surface "whole"."""
+        if mask is None or self.view3d is None or s["surface"] != "front":
+            return mask
+        try:
+            face = front_face(mask, self.plane, self.view3d[0], pkt["depth"], pkt["conf"],
+                              inset_mm=s["inset_mm"])
+        except Exception as e:               # never let it blank the projection
+            print(f"front face: {e!r}")
+            return mask
+        return np.where(face, mask, 0).astype(np.float32)
+
     def render_projector(self, frame, mask, axis, repl, s, quad=None):
         """The image the projector shows. Graphics are drawn in camera space
         inside the cello mask on black, then warped into projector space:
@@ -635,7 +660,7 @@ class Pipeline(threading.Thread):
         if mode == "white":                  # the mask as white light: alignment check
             x0, y0, x1, y1 = roi
             cam = np.zeros_like(frame)
-            a = shape_alpha(mask[y0:y1, x0:x1], s["grow"], s["feather"])
+            a = shape_alpha(mask[y0:y1, x0:x1], s["grow"], s["feather"], inward=True)
             cam[y0:y1, x0:x1] = (a * 255).astype(np.uint8)[..., None]
         elif mode == "outline":
             cam = np.zeros_like(frame)
@@ -645,7 +670,8 @@ class Pipeline(threading.Thread):
         else:                                # content: the replacement, black elsewhere
             cam = composite(frame, mask, repl, mode=s["mode"], axis=axis,
                             feather=s["feather"], grow=s["grow"], opacity=s["opacity"],
-                            blend=s["blend"], background=np.zeros_like(frame), quad=quad)
+                            blend=s["blend"], background=np.zeros_like(frame), quad=quad,
+                            inward=True)
         if self.view3d is not None:
             K = self.view3d[0]
             H = self.plane.homography(self.procam_live or self.procam, K, roi)
@@ -1010,6 +1036,8 @@ class Pipeline(threading.Thread):
                 "latency": self.latency_state(),
                 "phone": self.phone_state(),
                 "iphone": {"live": IPHONE.live, "fps": round(IPHONE.fps, 1),
+                           "kb": None if IPHONE.kb is None else round(IPHONE.kb),
+                           **IPHONE.diag,
                            "connections": IPHONE.connected, "error": IPHONE.error}}
 
     def _stage(self, name, value):
@@ -1030,6 +1058,78 @@ class Pipeline(threading.Thread):
         out = {k: round(1000 * v, 1) for k, v in {**ip, **self.lat}.items()}
         out["clock_rtt"] = round(1000 * IPHONE.rtt, 1) if IPHONE.rtt is not None else None
         return out
+
+    def measure_spill(self, frames=5):
+        """How well the light fits the cello: project the mask as white,
+        compare with black, and measure in the camera where light landed
+        against the mask. Spill is light outside the mask (on the sides, the
+        wall), miss is mask left dark; distances in mm on the cello."""
+        if self.smoother.mask is None or self.raw_frame is None:
+            return {"ok": False, "message": "no cello in view"}
+        mask = self.smoother.mask > 0.5
+        face = mask if getattr(self, "face", None) is None else self.face > 0.5
+        prev = self.proj_mode
+        wait = max(0.6, 1.5 * self.min_wait)
+
+        def grab(mode):
+            self.proj_mode = mode
+            time.sleep(wait)
+            seq, acc = self.raw_seq, []
+            for _ in range(frames):
+                seq, g = self._next_gray(seq)
+                acc.append(g)
+            return np.mean(acc, 0)
+
+        try:
+            dark = grab("black")
+            lit_img = grab("white")
+            dark2 = grab("black")
+        finally:
+            self.proj_mode = prev
+        diff = lit_img - (dark + dark2) / 2
+        if mask.shape != diff.shape:
+            return {"ok": False, "message": "the camera changed during the measurement"}
+        inside = np.median(diff[mask])
+        lit = diff > max(8.0, 0.3 * inside)
+        lit = cv2.morphologyEx(lit.astype(np.uint8), cv2.MORPH_OPEN, np.ones((3, 3), np.uint8)) > 0
+        # mm per camera pixel at the cello: its distance over the focal length
+        pkt = self.depth_pkt
+        mm = None
+        if self.plane.C is not None and pkt is not None:
+            f = pkt["K"][0, 0] * mask.shape[1] / pkt["size"][0]
+            mm = 1000 * self.plane.C[2] / f
+        out_d = cv2.distanceTransform((~mask).astype(np.uint8), cv2.DIST_L2, 5)
+        in_d = cv2.distanceTransform(mask.astype(np.uint8), cv2.DIST_L2, 5)
+        spill = lit & ~mask
+        miss = mask & ~lit
+        # light far from the cello is something else (a reflection, a person)
+        near = out_d < 80
+        spill &= near
+        sd, md = out_d[spill], in_d[miss]
+        to_mm = (lambda x: round(float(x) * mm, 1)) if mm else (lambda x: None)
+        res = {
+            "ok": True,
+            "coverage": round(float((lit & mask).sum() / mask.sum()), 3),
+            "face_coverage": round(float((lit & face).sum() / max(1, face.sum())), 3),
+            "face_vs_mask": round(float(face.sum() / mask.sum()), 3),
+            "spill_px": int(spill.sum()), "spill_vs_mask": round(float(spill.sum() / mask.sum()), 3),
+            "spill_p50_mm": to_mm(np.median(sd)) if len(sd) else 0,
+            "spill_p95_mm": to_mm(np.percentile(sd, 95)) if len(sd) else 0,
+            "miss_p95_mm": to_mm(np.percentile(md, 95)) if len(md) else 0,
+            "mm_per_px": None if mm is None else round(mm, 2),
+            "contrast": round(float(inside), 1),
+        }
+        # spill in red, missed cello in blue, good light in green
+        vis = cv2.cvtColor(np.clip(dark, 0, 255).astype(np.uint8), cv2.COLOR_GRAY2BGR) // 2
+        vis[lit & mask] = (0, 200, 0)
+        vis[spill] = (0, 0, 255)
+        vis[miss] = (255, 80, 0)
+        cnts, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+        cv2.drawContours(vis, cnts, -1, (255, 255, 255), 1)
+        os.makedirs(self.debug_dir, exist_ok=True)
+        cv2.imwrite(os.path.join(self.debug_dir, "spill.jpg"), vis)
+        np.savez_compressed(os.path.join(self.debug_dir, "spill.npz"), mask=mask, diff=diff, dark=dark)
+        return res
 
     def latency_probe(self, rounds=3):
         """Flash the projector black -> white and find the first iPhone frame
@@ -1277,6 +1377,11 @@ def build_app(pipe):
         finally:
             sender.cancel()
             IPHONE.connected -= 1
+
+    @app.post("/api/debug/spill")
+    def spill():
+        with calib_lock:
+            return pipe.measure_spill()
 
     @app.post("/api/debug/latency")
     def latency_probe():

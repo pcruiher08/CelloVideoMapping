@@ -98,7 +98,12 @@ def place_window(img, shape, roi):
     return _window["full"][y0:y1, x0:x1]
 
 
-def shape_alpha(mask, grow=0, feather=6):
+def shape_alpha(mask, grow=0, feather=6, inward=False):
+    """Soft alpha of the mask. `inward`: the soft edge lies entirely inside
+    the mask, fading to ~0 at its outline (for the projector: a blur centred
+    on the edge throws half of it past the cello)."""
+    if inward and feather > 0:
+        grow -= feather
     a = (mask > 0.5).astype(np.uint8) * 255 if grow else (mask * 255).astype(np.uint8)
     if grow:
         k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * abs(grow) + 1,) * 2)
@@ -122,7 +127,7 @@ def mask_roi(mask, margin):
 
 
 def composite(frame, mask, img, mode="warp", axis=None, feather=6, grow=0,
-              opacity=1.0, blend="normal", background=None, quad=None):
+              opacity=1.0, blend="normal", background=None, quad=None, inward=False):
     """Return the frame with the cello replaced. `background` optionally
     replaces everything that is *not* the cello (e.g. black for a clean
     projection matte)."""
@@ -143,7 +148,7 @@ def composite(frame, mask, img, mode="warp", axis=None, feather=6, grow=0,
         layer = place_fill(img, roi, mask)
 
     under = frame[y0:y1, x0:x1]
-    a = shape_alpha(mask[y0:y1, x0:x1], grow, feather)[..., None] * opacity
+    a = shape_alpha(mask[y0:y1, x0:x1], grow, feather, inward)[..., None] * opacity
     if blend == "multiply":
         layer = (layer.astype(np.float32) * under / 255).astype(np.uint8)
     elif blend == "screen":

@@ -4,11 +4,14 @@ import UIKit
 
 /// Streams every ARKit frame it can keep up with to the Mac over a WebSocket:
 /// a JPEG of the colour image, the LiDAR depth map and its confidence, and the
-/// camera intrinsics scaled to the JPEG. Frames that arrive while one is still
-/// being encoded or sent are dropped, so the Mac always gets the newest view.
+/// camera intrinsics. Up to two frames are in flight (one encoding while the
+/// other is on the wire); frames arriving beyond that are dropped, so the Mac
+/// always gets a recent view. One at a time capped the stream at ~20 fps:
+/// each frame waited for the previous send to finish before encoding.
 ///
 /// Message: "CDP1", UInt32 little-endian header length, JSON header, then
-/// JPEG bytes, depth (Float16 metres, dw x dh) and confidence (UInt8 0-2).
+/// JPEG bytes, and depth (Float16 metres, dw x dh) followed by confidence
+/// (UInt8 0-2), raw-deflated together when the header has "z".
 final class Streamer: NSObject, ObservableObject, ARSessionDelegate, URLSessionWebSocketDelegate {
     @Published var connected = false
     @Published var status = "not connected"
@@ -19,13 +22,35 @@ final class Streamer: NSObject, ObservableObject, ARSessionDelegate, URLSessionW
     private lazy var urlSession = URLSession(configuration: .default, delegate: self, delegateQueue: .main)
     private let ci = CIContext()
     private let queue = DispatchQueue(label: "encode")
-    private var busy = false            // main thread only
+    private var inFlight = 0            // frames encoding or sending; main thread only
+    private let maxInFlight = 2
     private var sent = 0
+    // what ARKit delivers, before any frame is dropped here, and why it may
+    // be slow (sent to the Mac in each header)
+    private var arFrames = 0
+    private var arStart = CACurrentMediaTime()
+    private var arFps = 0.0
     private var lastReport = CACurrentMediaTime()
     private var orientation = "portrait"
+    // the image the Mac works at (its calibrations are in these pixels) and
+    // the smaller one actually sent: 1280 px frames at 30 fps were ~390 KB
+    // each, more than the Wi-Fi carried, so frames bunched up and the Mac got
+    // ~20 fps. Segmentation runs at 512 px, so 960 loses nothing; the Mac
+    // scales it back up
     private let outWidth: CGFloat = 1280
+    private let sendWidth: CGFloat = 960
 
-    func start(session: ARSession) {
+    /// Owned here, not by the preview view, so the preview can be removed
+    /// while streaming: drawing the camera on the phone's screen at 60 fps
+    /// is heat the phone does not need, and a hot phone (thermal state
+    /// critical) gets ARKit throttled to 20 fps.
+    let session = ARSession()
+    private var started = false
+
+    func start() {
+        guard !started else { return }
+        started = true
+        session.delegate = self
         guard ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) else {
             status = "this iPhone has no LiDAR"
             return
@@ -144,7 +169,7 @@ final class Streamer: NSObject, ObservableObject, ARSessionDelegate, URLSessionW
         task = nil
         opened = false
         connected = false
-        busy = false
+        inFlight = 0
         status = "can't reach the Mac: \(e.localizedDescription)"
         if let host = wanted {               // keep trying until Stop
             status += " · retrying"
@@ -164,8 +189,15 @@ final class Streamer: NSObject, ObservableObject, ARSessionDelegate, URLSessionW
         case .landscapeRight: orientation = "landscapeRight"
         default: break                   // face up/down: keep the last one
         }
-        guard let task = task, opened, !busy, let depth = frame.sceneDepth else { return }
-        busy = true
+        arFrames += 1
+        let tNow = CACurrentMediaTime()
+        if tNow - arStart >= 1 {
+            arFps = Double(arFrames) / (tNow - arStart)
+            arFrames = 0
+            arStart = tNow
+        }
+        guard let task = task, opened, inFlight < maxInFlight, let depth = frame.sceneDepth else { return }
+        inFlight += 1
         let tDeliver = CACurrentMediaTime()   // ARKit hands the frame over
         let image = frame.capturedImage
         let K = frame.camera.intrinsics
@@ -174,13 +206,17 @@ final class Streamer: NSObject, ObservableObject, ARSessionDelegate, URLSessionW
         let confidence = depth.confidenceMap
         let orient = orientation
         let isLocked = locked
+        let diag: [String: Any] = ["ar_fps": arFps,
+                                   "thermal": ProcessInfo.processInfo.thermalState.rawValue,
+                                   "lowpower": ProcessInfo.processInfo.isLowPowerModeEnabled]
         queue.async { [weak self] in
             guard let self = self else { return }
             let data = self.pack(image: image, K: K, depth: depthMap, confidence: confidence,
-                                 ts: ts, orientation: orient, locked: isLocked, tDeliver: tDeliver)
+                                 ts: ts, orientation: orient, locked: isLocked, tDeliver: tDeliver,
+                                 diag: diag)
             task.send(.data(data)) { err in
                 DispatchQueue.main.async {
-                    self.busy = false
+                    self.inFlight = max(0, self.inFlight - 1)
                     if let err = err { self.fail(err) } else { self.count() }
                 }
             }
@@ -199,15 +235,16 @@ final class Streamer: NSObject, ObservableObject, ARSessionDelegate, URLSessionW
 
     private func pack(image: CVPixelBuffer, K: simd_float3x3, depth: CVPixelBuffer,
                       confidence: CVPixelBuffer?, ts: TimeInterval, orientation: String,
-                      locked: Bool, tDeliver: TimeInterval) -> Data {
+                      locked: Bool, tDeliver: TimeInterval, diag: [String: Any]) -> Data {
         // colour: the sensor image (always landscape), scaled to outWidth
         let iw = CGFloat(CVPixelBufferGetWidth(image))
         let ih = CGFloat(CVPixelBufferGetHeight(image))
         let s = outWidth / iw
-        let scaled = CIImage(cvPixelBuffer: image).transformed(by: CGAffineTransform(scaleX: s, y: s))
+        let ss = sendWidth / iw
+        let scaled = CIImage(cvPixelBuffer: image).transformed(by: CGAffineTransform(scaleX: ss, y: ss))
         let jpeg = ci.jpegRepresentation(
             of: scaled, colorSpace: CGColorSpaceCreateDeviceRGB(),
-            options: [kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 0.7]) ?? Data()
+            options: [kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 0.6]) ?? Data()
 
         // depth: Float32 metres -> Float16, rows packed
         let dw = CVPixelBufferGetWidth(depth)
@@ -245,14 +282,23 @@ final class Streamer: NSObject, ObservableObject, ARSessionDelegate, URLSessionW
             "t_cap": ts, "t_deliver": tDeliver, "t_send": CACurrentMediaTime(),
             "jpeg": jpeg.count, "depth": d16.count * 2, "conf": conf.count,
         ]
-        let headerData = (try? JSONSerialization.data(withJSONObject: header)) ?? Data()
+        var fields = header.merging(diag) { a, _ in a }
+        // depth + confidence deflated together (smooth depth and a mostly
+        // constant confidence shrink well): raw deflate, zlib.decompress(b, -15)
+        var block = Data()
+        d16.withUnsafeBufferPointer { block.append(Data(buffer: $0)) }
+        block.append(conf)
+        if let z = try? (block as NSData).compressed(using: .zlib) as Data {
+            fields["z"] = z.count
+            block = z
+        }
+        let headerData = (try? JSONSerialization.data(withJSONObject: fields)) ?? Data()
         var out = Data("CDP1".utf8)
         var n = UInt32(headerData.count).littleEndian
         out.append(Data(bytes: &n, count: 4))
         out.append(headerData)
         out.append(jpeg)
-        d16.withUnsafeBufferPointer { out.append(Data(buffer: $0)) }
-        out.append(conf)
+        out.append(block)
         return out
     }
 }

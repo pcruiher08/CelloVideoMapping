@@ -2,15 +2,14 @@ import ARKit
 import SceneKit
 import SwiftUI
 
-/// Camera preview; the same ARSession feeds the streamer.
+/// Camera preview of the streamer's ARSession (only while shown).
 struct ARPreview: UIViewRepresentable {
     let streamer: Streamer
 
     func makeUIView(context: Context) -> ARSCNView {
         let view = ARSCNView(frame: .zero)
         view.automaticallyUpdatesLighting = false
-        view.session.delegate = streamer
-        streamer.start(session: view.session)
+        view.session = streamer.session
         return view
     }
 
@@ -20,10 +19,16 @@ struct ARPreview: UIViewRepresentable {
 struct ContentView: View {
     @StateObject private var streamer = Streamer()
     @AppStorage("host") private var host = "10.22.205.165:8000"
+    // on until streaming starts (to aim the phone), then off to keep it cool
+    @State private var preview = true
 
     var body: some View {
         ZStack(alignment: .bottom) {
-            ARPreview(streamer: streamer).ignoresSafeArea()
+            if preview {
+                ARPreview(streamer: streamer).ignoresSafeArea()
+            } else {
+                Color.black.ignoresSafeArea()
+            }
             VStack(spacing: 8) {
                 HStack {
                     TextField("Mac address:port", text: $host)
@@ -35,6 +40,8 @@ struct ContentView: View {
                         if streamer.connected { streamer.disconnect() } else { streamer.connect(host: host) }
                     }
                     .buttonStyle(.borderedProminent)
+                    Button(preview ? "Hide" : "View") { preview.toggle() }
+                        .buttonStyle(.bordered)
                 }
                 Text(streamer.status)
                     .font(.footnote.monospaced())
@@ -43,7 +50,11 @@ struct ContentView: View {
             .padding()
             .background(.black.opacity(0.55))
         }
+        .onChange(of: streamer.connected) { on in      // iOS 16 form
+            if on { preview = false }
+        }
         .onAppear {
+            streamer.start()
             UIApplication.shared.isIdleTimerDisabled = true      // a mounted phone must not sleep
             if !streamer.connected { streamer.connect(host: host) }   // and should not need a tap
         }

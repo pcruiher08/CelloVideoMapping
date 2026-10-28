@@ -62,8 +62,12 @@ class CelloPlane:
         if abs(n[0]) > 0.94 or abs(n[1]) > 0.94:
             return False                 # over 70 degrees from facing the camera: not the cello's front
         if self.f is None:
-            # slow when still (no shimmer), quick when the cello moves
-            self.f = [OneEuroFilter(min_cutoff=1.0, beta=0.8) for _ in range(6)]
+            # slow when still (no shimmer), quick when the cello moves. beta
+            # is per unit of speed: m/s for the centre, rad/s for the normal,
+            # so each opens up at a real sway (a single small beta kept the
+            # tilt ~120 ms behind a slowly leaning cello)
+            self.f = [OneEuroFilter(min_cutoff=2.0, beta=30.0, d_cutoff=3.0) for _ in range(3)] + \
+                     [OneEuroFilter(min_cutoff=2.0, beta=12.0, d_cutoff=3.0) for _ in range(3)]
         s = [f(x, t) for f, x in zip(self.f, np.r_[C, n])]
         self.C = np.array(s[:3])
         n = np.array(s[3:])
@@ -140,3 +144,68 @@ class CelloPlane:
                             C3 - u3 * L / 2 + v3 * Wd / 2, C3 - u3 * L / 2 - v3 * Wd / 2])
         uv = (K @ corners.T).T
         return (uv[:, :2] / uv[:, 2:3]).astype(np.float32), (L, Wd)
+
+
+def front_face(mask, plane, K, depth=None, conf=None, inset_mm=6.0, body_only=True,
+               proud=0.04, neck_mm=140.0, min_neck_cm2=60.0, scale=4):
+    """The part of the mask that is the cello's front face, for projecting on.
+
+    - body_only: the neck and scroll are cut off. They are narrower than a
+      disc of `neck_mm`, which the body (upper bout ~34 cm, waist ~23 cm) is
+      not, so an opening with that disc leaves the body; only large removed
+      pieces are dropped (the C-bout corners are removed too but are small).
+    - proud: depth more than this (metres) in front of the cello's plane is
+      not the top (a hand, the bow, the fingerboard towards the nut).
+    - inset_mm: the edge is pulled in so the light never reaches the ribs
+      or the wall past them, whatever the segmentation and calibration error.
+
+    Sizes in mm become pixels with the cello's distance. Works on the mask's
+    bounding box at 1/`scale` resolution: the shapes are large."""
+    m = mask > 0.5
+    if plane.C is None or not m.any():
+        return m
+    h, w = m.shape
+    mm_px = 1000 * plane.C[2] / K[0, 0]           # mm per image pixel at the cello
+    ys, xs = np.nonzero(m)
+    pad = int(20 / mm_px) + 4
+    x0, y0 = max(0, xs.min() - pad), max(0, ys.min() - pad)
+    x1, y1 = min(w, xs.max() + 1 + pad), min(h, ys.max() + 1 + pad)
+    sub = m[y0:y1, x0:x1].astype(np.uint8)
+    small = cv2.resize(sub, ((x1 - x0) // scale + 1, (y1 - y0) // scale + 1), interpolation=cv2.INTER_AREA)
+    mm_s = mm_px * scale
+    keep = sub.copy()
+    if body_only:
+        # found at low resolution, cut at full: the body's edge stays exact
+        r = max(1, int(neck_mm / mm_s / 2))
+        body = cv2.morphologyEx(small, cv2.MORPH_OPEN,
+                                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1,) * 2))
+        if body.any():
+            rest = (small > 0) & (body == 0)
+            n, lab, stats, _ = cv2.connectedComponentsWithStats(rest.astype(np.uint8), connectivity=8)
+            big = np.flatnonzero(stats[1:, cv2.CC_STAT_AREA] * (mm_s / 10) ** 2 > min_neck_cm2) + 1
+            if len(big):
+                drop = np.isin(lab, big).astype(np.uint8)
+                drop = cv2.resize(drop, (x1 - x0, y1 - y0), interpolation=cv2.INTER_NEAREST)
+                body_full = cv2.resize(body, (x1 - x0, y1 - y0), interpolation=cv2.INTER_NEAREST)
+                # grown over the low-res blockiness, but never into the body
+                drop = cv2.dilate(drop, np.ones((2 * scale + 1,) * 2, np.uint8)) & (1 - body_full)
+                keep &= 1 - drop
+    if depth is not None and proud:
+        dh, dw = depth.shape
+        u, v = np.meshgrid((np.arange(dw) + 0.5) * w / dw - 0.5, (np.arange(dh) + 0.5) * h / dh - 0.5)
+        r = np.stack([(u - K[0, 2]) / K[0, 0], (v - K[1, 2]) / K[1, 1], np.ones_like(u)], -1)
+        on_plane = (plane.n @ plane.C) / (r @ plane.n)
+        ahead = np.isfinite(depth) & (on_plane - depth > proud)
+        if conf is not None:
+            ahead &= conf >= 1
+        ahead = cv2.morphologyEx(ahead.astype(np.uint8), cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
+        ahead = cv2.resize(ahead, (w, h), interpolation=cv2.INTER_NEAREST)[y0:y1, x0:x1]
+        ahead = cv2.dilate(ahead, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * int(15 / mm_px) + 1,) * 2))
+        keep &= 1 - ahead
+    if inset_mm > 0:
+        k = int(round(inset_mm / mm_px))
+        if k > 0:
+            keep = cv2.erode(keep, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * k + 1,) * 2))
+    out = np.zeros_like(m)
+    out[y0:y1, x0:x1] = keep > 0
+    return out

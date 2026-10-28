@@ -112,21 +112,29 @@ def main():
         ok &= check("structured mapping on the cello", err.mean() < 3.0,
                     f"mean {err.mean():.2f} px, max {err.max():.2f} px (projector pixels)")
 
-        # now the cello stands where the board was; project the mask as white
+        # now the cello stands where the board was; project the mask as white.
+        # Only the front view: with the light kept inside the outline, the lit
+        # cello and the same-size back view take turns at being the largest
+        one = scene.copy()
+        one[:, int(0.37 * CAM[0]):] = np.median(scene[:40].reshape(-1, 3), 0)
+        cam.scene = one.astype(np.float32)
         pipe.proj_mode = "white"
         pipe.smoother.reset()
         time.sleep(2.5)
         mask = pipe.smoother.mask
-        lit = None
+        inside = covered = None
         if mask is not None:
             # what the camera sees of the projector light alone
             light = cv2.warpPerspective(pipe.proj_frame, TRUE, CAM)[..., 0] > 127
             m = mask > 0.5
-            iou = (light & m).sum() / max(1, (light | m).sum())
-            lit = iou
-        ok &= check("white light lands on the cello", lit is not None and lit > 0.85,
-                    f"IoU of projected light vs cello mask in the camera: "
-                    f"{lit if lit is None else round(lit, 3)}")
+            # the soft edge is feathered inwards, so the light sits just
+            # inside the outline: nearly all of it on the cello, most of the
+            # cello lit
+            inside = (light & m).sum() / max(1, light.sum())
+            covered = (light & m).sum() / max(1, m.sum())
+        ok &= check("white light lands on the cello", inside is not None and inside > 0.97 and covered > 0.8,
+                    "no mask" if inside is None else
+                    f"{100 * inside:.1f}% of the light on the cello, {100 * covered:.0f}% of the cello lit")
         pipe.running = False
     finally:
         if backup is not None:

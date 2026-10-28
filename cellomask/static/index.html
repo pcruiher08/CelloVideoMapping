@@ -128,6 +128,12 @@
         <button data-v="flat">Flat</button>
       </div>
       <p class="sub" id="planeStatus" style="margin:0 0 8px">–</p>
+      <div class="seg" id="surfSeg" style="margin:6px 0">
+        <button data-v="front">Front face only</button>
+        <button data-v="whole">Whole cello</button>
+      </div>
+      <div class="row"><label for="inset_mm">Edge inset (mm)</label><input type="range" id="inset_mm" min="0" max="20" step="1"><output></output></div>
+      <p class="hint">Front face (3D only): no light on the neck, scroll, a hand or the bow in front of the top, and the edge pulled in so none reaches the ribs or the wall.</p>
       <button class="btn" id="calibrate3d" style="width:100%">Calibrate 3D (iPhone LiDAR, ~25 s)</button>
       <p class="hint">Needs the iPhone LiDAR source (CelloDepth app → Connect, phone mounted beside the projector). Solves the projector's lens and position in 3D from the stripes plus depth; the lit area must include different depths (cello in front of the wall, some floor). Also refits the flat mapping above.</p>
       <img id="calibView" alt="What the camera saw when calibrating" hidden style="width:100%;margin-top:8px;border-radius:8px;border:1px solid var(--line)">
@@ -210,7 +216,7 @@ let view = localStorageGet('view') || 'output';
 function localStorageGet(k) { try { return localStorage.getItem(k); } catch { return null; } }
 function localStorageSet(k, v) { try { localStorage.setItem(k, v); } catch {} }
 
-const SLIDERS = ['opacity', 'feather', 'grow', 'conf', 'smooth', 'a4', 'tuner_span', 'tuner_seconds', 'tuner_pos'];
+const SLIDERS = ['opacity', 'inset_mm', 'feather', 'grow', 'conf', 'smooth', 'a4', 'tuner_span', 'tuner_seconds', 'tuner_pos'];
 
 const MODE_HINTS = {
   warp: 'Image rides on the cello: rotates with it, top of the image at the scroll.',
@@ -295,6 +301,7 @@ function renderControls() {
   setSeg('rotSeg', s.rotation);
   setSeg('layoutSeg', s.tuner_layout);
   setSeg('mapSeg', s.mapping);
+  setSeg('surfSeg', s.surface);
   $('#rotSeg').style.display = s.mode === 'warp' ? '' : 'none';
   $('#modeHint').textContent = MODE_HINTS[s.mode];
   for (const k of SLIDERS) {
@@ -349,7 +356,7 @@ async function set(values) {
   state.settings = await post('/api/settings', values);
   renderControls();
 }
-for (const [id, key] of [['modeSeg', 'mode'], ['blendSeg', 'blend'], ['instSeg', 'instances'], ['rotSeg', 'rotation'], ['layoutSeg', 'tuner_layout'], ['mapSeg', 'mapping']]) {
+for (const [id, key] of [['modeSeg', 'mode'], ['blendSeg', 'blend'], ['instSeg', 'instances'], ['rotSeg', 'rotation'], ['layoutSeg', 'tuner_layout'], ['mapSeg', 'mapping'], ['surfSeg', 'surface']]) {
   $('#' + id).addEventListener('click', e => { if (e.target.dataset.v) set({ [key]: e.target.dataset.v }); });
 }
 for (const k of SLIDERS) {

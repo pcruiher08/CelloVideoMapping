@@ -108,6 +108,8 @@ class MaskSmoother:
         self.missed = 0
 
     def __call__(self, mask, shape):
+        if self.mask is not None and self.mask.shape != tuple(shape):
+            self.reset()                 # the camera turned: the old mask no longer fits
         if mask is None:
             self.missed += 1
             if self.mask is None:
@@ -147,7 +149,7 @@ class AxisTracker:
 
     With `follow=False` the angle is locked upright."""
 
-    def __init__(self, max_tilt=60, min_elongation=1.4, deadband=0.8):
+    def __init__(self, max_tilt=60, min_elongation=1.4, deadband=0.4):
         self.max_tilt = np.radians(max_tilt)
         self.min_elongation = min_elongation
         self.deadband = np.radians(deadband)
@@ -201,8 +203,10 @@ class AxisTracker:
         body = self._body_start(proj, perp, lo, hi)
 
         if self.f is None:
-            self.f = [OneEuroFilter(min_cutoff=1.2, beta=0.02) for _ in vals]
-            self.angle_f = OneEuroFilter(min_cutoff=1.0, beta=1.5)
+            # tuned on a simulated sway at 20 fps (rotation trailed 120-180 ms
+            # with the deadband at 0.8 deg and a 1 Hz angle cutoff; now ~70)
+            self.f = [OneEuroFilter(min_cutoff=1.2, beta=0.02, d_cutoff=3.0) for _ in vals]
+            self.angle_f = OneEuroFilter(min_cutoff=2.5, beta=4.0, d_cutoff=3.0)
             self.body_f = OneEuroFilter(min_cutoff=0.5, beta=0.5)
         smoothed = [f(x, t) for f, x in zip(self.f, vals)]
         self.last = (*smoothed, self.angle_f(up, t))

@@ -15,6 +15,7 @@ import json
 import struct
 import threading
 import time
+import zlib
 
 import cv2
 import numpy as np
@@ -47,12 +48,17 @@ def parse(msg):
     o = 8 + n
     jpeg = np.frombuffer(msg[o:o + hd["jpeg"]], np.uint8)
     o += hd["jpeg"]
-    depth = np.frombuffer(msg[o:o + hd["depth"]], np.float16).reshape(hd["dh"], hd["dw"]).astype(np.float32)
-    o += hd["depth"]
+    block = msg[o:]
+    if hd.get("z"):                   # depth + confidence, raw deflate
+        block = zlib.decompress(block[:hd["z"]], -15)
+    depth = np.frombuffer(block[:hd["depth"]], np.float16).reshape(hd["dh"], hd["dw"]).astype(np.float32)
     conf = None
     if hd.get("conf"):
-        conf = np.frombuffer(msg[o:o + hd["conf"]], np.uint8).reshape(hd["dh"], hd["dw"])
+        conf = np.frombuffer(block[hd["depth"]:hd["depth"] + hd["conf"]], np.uint8).reshape(hd["dh"], hd["dw"])
     bgr = cv2.imdecode(jpeg, cv2.IMREAD_COLOR)
+    if (bgr.shape[1], bgr.shape[0]) != (hd["w"], hd["h"]):
+        # sent smaller to spare the Wi-Fi; K and the calibrations are at w x h
+        bgr = cv2.resize(bgr, (hd["w"], hd["h"]), interpolation=cv2.INTER_LINEAR)
     K = np.array([[hd["fx"], 0, hd["cx"]], [0, hd["fy"], hd["cy"]], [0, 0, 1]], np.float64)
     code = ROTATE.get(hd.get("orientation"), None)
     K, size = rotate_K(K, (bgr.shape[1], bgr.shape[0]), code)
@@ -92,6 +98,8 @@ class IPhoneSource:
         self.connected = 0          # open WebSocket connections
         self.last_t = 0.0
         self.fps = 0.0
+        self.kb = None                   # mean message size (KB): Wi-Fi throughput check
+        self.diag = {}                   # the phone's ARKit frame rate, thermal state, low power
         self.error = None
         self.outbox = []            # commands for the phone, sent by the WebSocket handler
         # clock sync (NTP-style ping/pong): mac time = phone time + offset;
@@ -128,6 +136,8 @@ class IPhoneSource:
             self.error = repr(e)
             return
         hd["t_recv"] = now
+        self.kb = len(msg) / 1024 if self.kb is None else 0.9 * self.kb + 0.1 * len(msg) / 1024
+        self.diag = {k: hd.get(k) for k in ("ar_fps", "thermal", "lowpower")}
         if "t_cap" in hd:
             self._stage("arkit", hd["t_deliver"] - hd["t_cap"])       # capture -> app
             self._stage("encode", hd["t_send"] - hd["t_deliver"])     # JPEG + depth packing
