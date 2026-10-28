@@ -13,4 +13,6 @@ set -euo pipefail
 cd "$(dirname "$0")"
 IP=$(ipconfig getifaddr en0 2>/dev/null || hostname -I 2>/dev/null | cut -d' ' -f1 || true)
 echo "iPhone app address: ${IP:-unknown, see System Settings > Wi-Fi}:${PORT:-8000}"
+echo "Projector window: q quits, Esc leaves fullscreen (connect the projector and"
+echo "set it to extend BEFORE starting, or the window opens on this screen)"
 exec bash ./run.sh --source lidar --projector --host 0.0.0.0 "$@"

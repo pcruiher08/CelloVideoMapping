@@ -31,6 +31,12 @@ def pick_screen(spec):
 def open_window(pipe, spec="auto", fullscreen=True):
     import pyglet
     screen = pick_screen(spec)
+    if fullscreen and len(pyglet.display.get_display().get_screens()) == 1:
+        # no projector connected: a black fullscreen window with the pointer
+        # hidden over the only screen looked like a frozen Mac
+        print("no second screen: opening the projector window as a normal window "
+              "(connect the projector, set it to extend, and restart)")
+        fullscreen = False
     if fullscreen:
         win = pyglet.window.Window(screen=screen, fullscreen=True, vsync=True,
                                    caption="Cello projector")
@@ -81,9 +87,11 @@ def run_window(pipe, win):
         from pyglet.window import key
         if symbol == key.F:
             win.set_fullscreen(not win.fullscreen)
+            win.set_mouse_visible(not win.fullscreen)
         elif symbol == key.ESCAPE:
             if win.fullscreen:
                 win.set_fullscreen(False)
+                win.set_mouse_visible(True)
             return pyglet.event.EVENT_HANDLED          # do not close on esc
         elif symbol == key.B:
             if pipe.proj_mode == "black":
@@ -99,7 +107,7 @@ def run_window(pipe, win):
         pipe.running = False
         pipe.projector_window = False
 
-    win.set_mouse_visible(False)
+    win.set_mouse_visible(not win.fullscreen)     # hidden only on the projector
     pyglet.clock.schedule_interval(update, 1 / 120)
     try:
         pyglet.app.run()
