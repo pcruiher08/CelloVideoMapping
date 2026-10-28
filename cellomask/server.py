@@ -22,6 +22,7 @@ import numpy as np
 
 from .cello3d import CelloPlane, front_face
 from .predict import PlanePredictor, PosePredictor, apply_axis, apply_mask
+from .shape import ShapeMemory
 from .composite import composite, debug_overlay, mask_roi, shape_alpha
 from .iphone import IPHONE, depth_view
 from .procam3d import Procam3D, correspondences, implausible3d, solve_projector, stable_depth
@@ -61,6 +62,7 @@ DEFAULTS = {
     "mapping": "3d",         # 3d (iPhone depth + 3D calibration, follows lean/turn) | flat
     "surface": "front",      # front (the body's top only, from depth) | whole (the full mask)
     "inset_mm": 6.0,         # front: edge pulled in so no light reaches the ribs
+    "hands": "paint",        # a hand / arm over the cello: paint (the whole cello shape) | dark (cut out)
     "predict_ms": 250,       # draw the cello this far ahead of its capture (0 = off); the light lags ~350 ms
 }
 
@@ -333,6 +335,8 @@ class Pipeline(threading.Thread):
         self.plane = CelloPlane()      # the cello's surface from that depth
         self.plane_t = 0.0             # when the plane was last fitted
         self.pose_pred = PosePredictor()   # where the cello will be when the light lands
+        self.shape = ShapeMemory()     # the whole outline while a hand covers part of it
+        self.covered = 0.0             # fraction of the cello covered (hand, arm, bow)
         self.plane_pred = PlanePredictor()
         self.t_meas = 0.0              # capture time of the frame being drawn (Mac clock)
         self.view3d = None             # (K, quad) used for the current frame, or None (flat)
@@ -530,12 +534,17 @@ class Pipeline(threading.Thread):
         if inst:
             raw = largest_cello(inst) if s["instances"] == "largest" else \
                 np.max(np.stack([d["mask"] for d in inst]), 0)
-        mask = self.smoother(raw, frame.shape[:2])
+        seen = self.smoother(raw, frame.shape[:2])
+        # the whole cello, also where a hand or the bow is in front of it;
+        # "dark" keeps only what is seen (the hand then cuts a hole)
+        mask, self.covered = (self.shape(seen) if seen is not None else (None, 0.0))
+        if s["hands"] != "paint":
+            mask = seen
         now = time.time()
         # filters run on capture time: frames arrive unevenly over Wi-Fi
         self.t_meas = (pkt.get("t_cap_mac") if pkt is not None else None) or now
         axis = self.axis(mask, now) if mask is not None else None
-        quad = self.update_3d(frame, mask, axis, pkt, s, now)
+        quad = self.update_3d(frame, seen, axis, pkt, s, now)    # the plane from the cello's own depth
         if not self.pose_pred.update(mask, self.t_meas) and mask is None:
             self.pose_pred.reset()
         # what gets light: the front face when depth allows, else the mask
@@ -636,7 +645,10 @@ class Pipeline(threading.Thread):
             return mask
         try:
             a = self.axis.last
-            face = front_face(mask, self.plane, self.view3d[0], pkt["depth"], pkt["conf"],
+            # depth cuts what stands in front of the top only when hands are
+            # left dark; painting them keeps the whole face lit
+            depth = pkt["depth"] if s["hands"] != "paint" else None
+            face = front_face(mask, self.plane, self.view3d[0], depth, pkt["conf"],
                               inset_mm=s["inset_mm"], axis=None if a is None else (a[0], a[1], a[4]))
         except Exception as e:               # never let it blank the projection
             print(f"front face: {e!r}")
@@ -1066,6 +1078,7 @@ class Pipeline(threading.Thread):
                 "scale": c.scale if c else 1.0,
                 "procam": self.procam.summary() if self.procam else None,
                 "plane": self.plane_state(),
+                "covered": round(100 * self.covered),
                 "latency": self.latency_state(),
                 "phone": self.phone_state(),
                 "iphone": {"live": IPHONE.live, "fps": round(IPHONE.fps, 1),

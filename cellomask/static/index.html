@@ -132,9 +132,13 @@
         <button data-v="front">Front face only</button>
         <button data-v="whole">Whole cello</button>
       </div>
+      <div class="seg" id="handSeg" style="margin:6px 0">
+        <button data-v="paint">Paint over hands</button>
+        <button data-v="dark">Leave hands dark</button>
+      </div>
       <div class="row"><label for="inset_mm">Edge inset (mm)</label><input type="range" id="inset_mm" min="0" max="20" step="1"><output></output></div>
       <div class="row"><label for="predict_ms">Predict ahead (ms)</label><input type="range" id="predict_ms" min="0" max="450" step="25"><output></output></div>
-      <p class="hint">Front face (3D only): no light on the neck, scroll, a hand or the bow in front of the top, and the edge pulled in so none reaches the ribs or the wall. Predict ahead: the light reaches the cello ~350 ms after the phone sees it; the mapping is moved to where the cello will be by then (0 = off; less overshoots less when the player stops suddenly).</p>
+      <p class="hint">Front face (3D only): no light on the neck, scroll, a hand or the bow in front of the top, and the edge pulled in so none reaches the ribs or the wall. Hands: painting over keeps the cello's whole shape lit while a hand, an arm or the bow covers part of it; leaving them dark cuts what is in front out of the light. Predict ahead: the light reaches the cello ~350 ms after the phone sees it; the mapping is moved to where the cello will be by then (0 = off; less overshoots less when the player stops suddenly).</p>
       <button class="btn" id="calibrate3d" style="width:100%">Calibrate 3D (iPhone LiDAR, ~25 s)</button>
       <p class="hint">Needs the iPhone LiDAR source (CelloDepth app → Connect, phone mounted beside the projector). Solves the projector's lens and position in 3D from the stripes plus depth; the lit area must include different depths (cello in front of the wall, some floor). Also refits the flat mapping above.</p>
       <img id="calibView" alt="What the camera saw when calibrating" hidden style="width:100%;margin-top:8px;border-radius:8px;border:1px solid var(--line)">
@@ -303,6 +307,7 @@ function renderControls() {
   setSeg('layoutSeg', s.tuner_layout);
   setSeg('mapSeg', s.mapping);
   setSeg('surfSeg', s.surface);
+  setSeg('handSeg', s.hands);
   $('#rotSeg').style.display = s.mode === 'warp' ? '' : 'none';
   $('#modeHint').textContent = MODE_HINTS[s.mode];
   for (const k of SLIDERS) {
@@ -357,7 +362,7 @@ async function set(values) {
   state.settings = await post('/api/settings', values);
   renderControls();
 }
-for (const [id, key] of [['modeSeg', 'mode'], ['blendSeg', 'blend'], ['instSeg', 'instances'], ['rotSeg', 'rotation'], ['layoutSeg', 'tuner_layout'], ['mapSeg', 'mapping'], ['surfSeg', 'surface']]) {
+for (const [id, key] of [['modeSeg', 'mode'], ['blendSeg', 'blend'], ['instSeg', 'instances'], ['rotSeg', 'rotation'], ['layoutSeg', 'tuner_layout'], ['mapSeg', 'mapping'], ['surfSeg', 'surface'], ['handSeg', 'hands']]) {
   $('#' + id).addEventListener('click', e => { if (e.target.dataset.v) set({ [key]: e.target.dataset.v }); });
 }
 for (const k of SLIDERS) {
@@ -394,7 +399,7 @@ function renderProjector() {
   }
   const pl = p.plane;
   $('#planeStatus').innerHTML = pl
-    ? `<span class="in">Mapping in 3D</span> · cello ${pl.distance.toFixed(2)} m · lean ${pl.lean > 0 ? '+' : ''}${pl.lean}° (top away) · turn ${pl.turn > 0 ? '+' : ''}${pl.turn}° (right away) · ${pl.points} depth points, ±${pl.residual_mm} mm`
+    ? `<span class="in">Mapping in 3D</span> · cello ${pl.distance.toFixed(2)} m · lean ${pl.lean > 0 ? '+' : ''}${pl.lean}° (top away) · turn ${pl.turn > 0 ? '+' : ''}${pl.turn}° (right away) · ${pl.points} depth points, ±${pl.residual_mm} mm${p.covered ? ` · ${p.covered}% covered (hand / bow)` : ''}`
     : (state.settings && state.settings.mapping === '3d'
         ? '<span class="near">3D unavailable</span>: needs the iPhone source, a 3D calibration and the cello in view; using the flat mapping'
         : 'Flat mapping (fixed plane from the stripe calibration)');
