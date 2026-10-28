@@ -1,11 +1,18 @@
-"""Fullscreen projector window (pyglet, main thread).
+"""Projector window (pyglet, main thread).
 
-Shows Pipeline.proj_frame, already in projector pixels, at the screen's
-refresh rate. A native window skips the browser's JPEG encode/decode and
-polling, which matters for how far the light trails a moving cello.
+Shows Pipeline.proj_frame, already in projector pixels. A native window
+skips the browser's JPEG encode/decode and polling, which matters for how
+far the light trails a moving cello.
 
-Keys in the window:  f  toggle fullscreen   b  blackout on/off
-                     esc  leave fullscreen   q  quit the app
+It covers the projector screen as a borderless window, not macOS fullscreen:
+a fullscreen window is a Space of its own, and with vsync its buffer swap
+blocked (holding Python's GIL, so the whole app stalled) whenever Mission
+Control or a desktop switch animated it, which froze the Mac's desktop. The
+window is pinned instead: on every Space, left alone by Mission Control, and
+paced at 60 fps by the app rather than by the display.
+
+Keys in the window:  f  cover the screen / normal window   b  blackout on/off
+                     esc  normal window                   q  quit the app
 
 The web page's Projector section lists the screens and moves the window to
 another one live (pipe.screen_request, handled here on the main thread).
@@ -37,23 +44,55 @@ def pick_screen(spec):
     return idx, screens[idx]
 
 
+# NSWindow collection behaviour: on all Spaces, stationary in Mission
+# Control, out of the window cycle; and a level above normal windows (so
+# TouchDesigner's own window cannot cover the projector)
+_ALL_SPACES, _STATIONARY, _IGNORES_CYCLE = 1 << 0, 1 << 4, 1 << 6
+_FLOATING_LEVEL = 3
+
+
+def cover(win, screen):
+    """Make `win` a borderless cover of `screen`, pinned (see the module doc)."""
+    win.set_size(screen.width, screen.height)
+    win.set_location(screen.x, screen.y)
+    ns = getattr(win, "_nswindow", None)
+    if ns is not None:                       # macOS
+        ns.setCollectionBehavior_(_ALL_SPACES | _STATIONARY | _IGNORES_CYCLE)
+        ns.setLevel_(_FLOATING_LEVEL)
+    win.set_mouse_visible(False)
+    win.covering = True
+
+
+def uncover(win, screen):
+    """A normal, movable window (for testing on one screen)."""
+    ns = getattr(win, "_nswindow", None)
+    if ns is not None:
+        ns.setLevel_(0)
+    win.set_size(screen.width // 2, screen.height // 2)
+    win.set_location(screen.x + 40, screen.y + 60)
+    win.set_mouse_visible(True)
+    win.covering = False
+
+
 def open_window(pipe, spec="auto", fullscreen=True):
     import pyglet
     idx, screen = pick_screen(spec)
     pipe.screens, pipe.screen_index = list_screens(), idx
     if fullscreen and len(pyglet.display.get_display().get_screens()) == 1:
-        # no projector connected: a black fullscreen window with the pointer
-        # hidden over the only screen looked like a frozen Mac
+        # no projector connected: a black window with the pointer hidden over
+        # the only screen looked like a frozen Mac
         print("no second screen: opening the projector window as a normal window "
               "(connect the projector, set it to extend, and restart)")
         fullscreen = False
+    # vsync off: the app paces drawing itself (see the module doc)
+    win = pyglet.window.Window(width=screen.width // 2, height=screen.height // 2,
+                               style=pyglet.window.Window.WINDOW_STYLE_BORDERLESS if fullscreen
+                               else pyglet.window.Window.WINDOW_STYLE_DEFAULT,
+                               screen=screen, vsync=False, caption="Cello projector")
     if fullscreen:
-        win = pyglet.window.Window(screen=screen, fullscreen=True, vsync=True,
-                                   caption="Cello projector")
+        cover(win, screen)
     else:
-        win = pyglet.window.Window(width=screen.width // 2, height=screen.height // 2,
-                                   screen=screen, resizable=True, vsync=True,
-                                   caption="Cello projector")
+        uncover(win, screen)
     # draw in the projector's own pixels; a windowed test keeps the screen size
     # so the calibration is the same as fullscreen
     pipe.proj_size = (screen.width, screen.height)
@@ -69,13 +108,12 @@ def run_window(pipe, win):
              "listed": time.time()}
 
     def move(idx):
-        """Fullscreen on screen `idx` (from the web page)."""
+        """Cover screen `idx` (from the web page)."""
         screens = pyglet.display.get_display().get_screens()
         if not 0 <= idx < len(screens):
             return
         s = screens[idx]
-        win.set_fullscreen(True, screen=s)
-        win.set_mouse_visible(False)
+        cover(win, s)
         pipe.proj_size = (s.width, s.height)
         pipe.screen_index = idx
         print(f"projector window -> screen #{idx} ({s.width}x{s.height})")
@@ -115,13 +153,13 @@ def run_window(pipe, win):
     @win.event
     def on_key_press(symbol, modifiers):
         from pyglet.window import key
+        screens = pyglet.display.get_display().get_screens()
+        here = screens[min(pipe.screen_index or 0, len(screens) - 1)]
         if symbol == key.F:
-            win.set_fullscreen(not win.fullscreen)
-            win.set_mouse_visible(not win.fullscreen)
+            (uncover if win.covering else cover)(win, here)
         elif symbol == key.ESCAPE:
-            if win.fullscreen:
-                win.set_fullscreen(False)
-                win.set_mouse_visible(True)
+            if win.covering:
+                uncover(win, here)
             return pyglet.event.EVENT_HANDLED          # do not close on esc
         elif symbol == key.B:
             if pipe.proj_mode == "black":
@@ -137,10 +175,9 @@ def run_window(pipe, win):
         pipe.running = False
         pipe.projector_window = False
 
-    win.set_mouse_visible(not win.fullscreen)     # hidden only on the projector
     pyglet.clock.schedule_interval(update, 1 / 120)
     try:
-        pyglet.app.run()
+        pyglet.app.run(interval=1 / 60)          # redraw pace, instead of vsync
     except KeyboardInterrupt:
         pass
     pipe.running = False
