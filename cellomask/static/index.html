@@ -132,13 +132,15 @@
         <button data-v="front">Front face only</button>
         <button data-v="whole">Whole cello</button>
       </div>
+      <button class="btn" id="learnShape" style="width:100%;margin:6px 0">Learn cello shape (cello alone, still)</button>
+      <p class="sub" id="shapeStatus" style="margin:0 0 6px">–</p>
       <div class="seg" id="handSeg" style="margin:6px 0">
         <button data-v="paint">Paint over hands</button>
         <button data-v="dark">Leave hands dark</button>
       </div>
       <div class="row"><label for="inset_mm">Edge inset (mm)</label><input type="range" id="inset_mm" min="0" max="20" step="1"><output></output></div>
       <div class="row"><label for="predict_ms">Predict ahead (ms)</label><input type="range" id="predict_ms" min="0" max="450" step="25"><output></output></div>
-      <p class="hint">Front face (3D only): no light on the neck, scroll, a hand or the bow in front of the top, and the edge pulled in so none reaches the ribs or the wall. Hands: painting over keeps the cello's whole shape lit while a hand, an arm or the bow covers part of it; leaving them dark cuts what is in front out of the light. Predict ahead: the light reaches the cello ~350 ms after the phone sees it; the mapping is moved to where the cello will be by then (0 = off; less overshoots less when the player stops suddenly).</p>
+      <p class="hint">Front face (3D only): no light on the neck, scroll, a hand or the bow in front of the top, and the edge pulled in so none reaches the ribs or the wall. Learned shape: the light uses the cello's own outline, fitted to the visible edges, so hands, knees or the bow cannot change it. Hands: painting over keeps the cello's whole shape lit while a hand, an arm or the bow covers part of it; leaving them dark cuts what is in front out of the light. Predict ahead: the light reaches the cello ~350 ms after the phone sees it; the mapping is moved to where the cello will be by then (0 = off; less overshoots less when the player stops suddenly).</p>
       <button class="btn" id="calibrate3d" style="width:100%">Calibrate 3D (iPhone LiDAR, ~25 s)</button>
       <p class="hint">Needs the iPhone LiDAR source (CelloDepth app → Connect, phone mounted beside the projector). Solves the projector's lens and position in 3D from the stripes plus depth; the lit area must include different depths (cello in front of the wall, some floor). Also refits the flat mapping above.</p>
       <img id="calibView" alt="What the camera saw when calibrating" hidden style="width:100%;margin-top:8px;border-radius:8px;border:1px solid var(--line)">
@@ -397,6 +399,11 @@ function renderProjector() {
       : ph.tracking ? `phone moved ${ph.moved_cm} cm / ${ph.moved_deg}° (corrected)`
       : '<span class="near">phone position not confirmed (room view changed?)</span>');
   }
+  const sh = p.shape;
+  if (sh) $('#shapeStatus').innerHTML = !sh.learned
+    ? '<span class="near">Outline not learned</span>: with the cello alone and still, press Learn (Calibrate 3D also learns it)'
+    : sh.fitted ? `<span class="in">Learned outline fitted</span> (${Math.round(100 * sh.inliers)}% of the visible edge on it)`
+    : '<span class="near">Learned outline not fitting</span>: using the live mask (cello moved far, or relearn)';
   const pl = p.plane;
   $('#planeStatus').innerHTML = pl
     ? `<span class="in">Mapping in 3D</span> · cello ${pl.distance.toFixed(2)} m · lean ${pl.lean > 0 ? '+' : ''}${pl.lean}° (top away) · turn ${pl.turn > 0 ? '+' : ''}${pl.turn}° (right away) · ${pl.points} depth points, ±${pl.residual_mm} mm${p.covered ? ` · ${p.covered}% covered (hand / bow)` : ''}`
@@ -441,6 +448,11 @@ async function calibrate(method) {
 $('#calibrate').addEventListener('click', () => calibrate('structured'));
 $('#calibrate3d').addEventListener('click', () => calibrate('lidar'));
 $('#calibMarkers').addEventListener('click', e => { e.preventDefault(); calibrate('markers'); });
+$('#learnShape').addEventListener('click', async () => {
+  try { const r = await post('/api/shape/learn', {}); $('#err').hidden = false; $('#err').textContent = r.message; }
+  catch (err) { $('#err').hidden = false; $('#err').textContent = err.message; }
+  refresh();
+});
 
 // replacement gallery
 $('#gallery').addEventListener('click', async e => {

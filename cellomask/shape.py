@@ -28,6 +28,36 @@ def fill_holes(m):
     return (m | (1 - flood[1:-1, 1:-1])) > 0
 
 
+def close_across(mask, up, length, scale=2):
+    """Fill gaps up to `length` px wide that run along the cello (direction
+    `up`, radians) with cello on both sides: the black fingerboard, which
+    the segmentation keeps cutting out of the upper bout as a slot. A
+    closing with a line across the cello bridges them; the C-bouts and a
+    hand coming in from the side have cello on one side only and stay."""
+    m = mask > 0.5
+    if not m.any() or length < 3:
+        return mask
+    ys, xs = np.nonzero(m)
+    pad = int(length) + 4
+    x0, y0 = max(0, xs.min() - pad), max(0, ys.min() - pad)
+    x1, y1 = min(m.shape[1], xs.max() + 1 + pad), min(m.shape[0], ys.max() + 1 + pad)
+    sub = m[y0:y1, x0:x1].astype(np.uint8)
+    small = cv2.resize(sub, ((x1 - x0) // scale, (y1 - y0) // scale), interpolation=cv2.INTER_NEAREST)
+    n = int(length / scale) | 1
+    k = np.zeros((n, n), np.uint8)
+    c = n // 2
+    across = np.array([-np.sin(up), np.cos(up)]) * c
+    cv2.line(k, (int(round(c - across[0])), int(round(c - across[1]))),
+             (int(round(c + across[0])), int(round(c + across[1]))), 1, 1)
+    closed = cv2.morphologyEx(small, cv2.MORPH_CLOSE, k)
+    add = cv2.resize(closed & (1 - small), (x1 - x0, y1 - y0), interpolation=cv2.INTER_NEAREST) > 0
+    if not add.any():
+        return mask
+    out = mask.astype(np.float32, copy=True)
+    out[y0:y1, x0:x1][add & (sub == 0)] = 1.0
+    return out
+
+
 def similarity(p):
     """2x3 matrix from (tx, ty, angle, log scale): kept outline -> image."""
     tx, ty, a, ls = p
@@ -145,7 +175,11 @@ class ShapeMemory:
         area = max(1, placed.sum())
         missing = (placed & ~m).sum() / area
         extra = (m & ~placed).sum() / area
-        if missing < self.whole or extra > self.whole:
+        # hysteresis: once covered, whole again only when almost nothing is
+        # missing (a hand biting ~3% flipped between covered and whole and
+        # flickered that patch of light)
+        whole = self.whole / 2 if self.covered > 0 else self.whole
+        if missing < whole or extra > self.whole:
             # whole (or bigger than what was kept): this is the new outline
             self._keep(m)
             self.covered = 0.0
@@ -165,3 +199,131 @@ class ShapeMemory:
         out = mask.astype(np.float32, copy=True)
         np.maximum(out[y0:y1, x0:x1], full, out=out[y0:y1, x0:x1])
         return out, self.covered
+
+
+class LearnedShape:
+    """The cello's outline learned once (alone and still: at Calibrate 3D or
+    with the Learn button), then only fitted, every frame, to the visible
+    cello edges. The light uses that outline and nothing else, so what the
+    segmentation adds or loses while the cello is played (a hand over the
+    upper bout, the knees beside the lower bout, the mask cut straight at a
+    detection box that jumps with the hands) cannot change its shape.
+
+    The fit is affine (chamfer matching, Gauss-Newton): besides moving and
+    turning it stretches, which follows a cello leaning further back when
+    played than on its stand (it gets shorter in the image). Saved to
+    data/cello_shape.npz; the phone stays put, so pixels stay comparable."""
+
+    def __init__(self, path, scale=2, points=400, min_inliers=0.35):
+        self.path = path
+        self.scale = scale
+        self.points = points
+        self.min_inliers = min_inliers
+        self.tpl = self.dt = self.size = None
+        self.q = None                   # image (1/scale px) -> outline: u = B x + c, as [B | c]
+        self.inliers = 0.0
+        self.ok = False
+        self.load()
+
+    def load(self):
+        import os
+        if os.path.exists(self.path):
+            z = np.load(self.path)
+            self._set(z["tpl"].astype(np.uint8), tuple(z["size"]))
+
+    def _set(self, tpl, size):
+        edge = np.ones_like(tpl)
+        cnts, _ = cv2.findContours(tpl, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+        cv2.drawContours(edge, cnts, -1, 0, 1)
+        dt = cv2.distanceTransform(edge, cv2.DIST_L2, 3).astype(np.float32)
+        gy, gx = np.gradient(dt)
+        self.tpl, self.dt, self.size = tpl, np.dstack([dt, gx, gy]), size
+        self.q, self.ok = None, False
+        m = cv2.moments(tpl, binaryImage=True)
+        self.tpl_c = np.array([m["m10"], m["m01"]]) / m["m00"]
+        self.tpl_area = m["m00"]
+
+    def learn(self, mask):
+        """Learn the outline from a mask of the cello alone (full size)."""
+        k = self.scale
+        m = fill_holes(mask[::k, ::k] > 0.5)
+        if m.sum() < 200:
+            return False
+        ys, xs = np.nonzero(m)
+        pad = 20
+        x0, y0 = max(0, xs.min() - pad), max(0, ys.min() - pad)
+        x1, y1 = min(m.shape[1], xs.max() + 1 + pad), min(m.shape[0], ys.max() + 1 + pad)
+        tpl = m[y0:y1, x0:x1].astype(np.uint8)
+        np.savez_compressed(self.path, tpl=tpl, size=np.array(mask.shape))
+        self._set(tpl, mask.shape)
+        self.q = np.array([[1.0, 0, -x0], [0, 1.0, -y0]])
+        return True
+
+    def _start(self, m):
+        """A first guess from the visible mask: same centre, same area."""
+        mm = cv2.moments(m.astype(np.uint8), binaryImage=True)
+        c = np.array([mm["m10"], mm["m01"]]) / mm["m00"]
+        s = np.sqrt(self.tpl_area / mm["m00"])
+        return np.array([[s, 0, self.tpl_c[0] - s * c[0]], [0, s, self.tpl_c[1] - s * c[1]]])
+
+    def _fit(self, pts, q, iters=14, gates=(12, 6, 3, 1.5)):
+        phase = max(1, iters // len(gates))
+        X = np.c_[pts, np.ones(len(pts))]
+        inl = 0.0
+        for k in range(iters):
+            gate = gates[min(k // phase, len(gates) - 1)]
+            u = X @ q.T
+            smp = bilinear(self.dt, u[:, 0], u[:, 1])
+            r, gx, gy = smp[:, 0], smp[:, 1], smp[:, 2]
+            use = r < gate
+            inl = float((r < 1.5).mean())
+            if use.sum() < 40:
+                return q, 0.0
+            # u is linear in [B | c]: d r / d q is the gradient times x
+            J = np.c_[gx[:, None] * X, gy[:, None] * X][use]
+            step = np.linalg.solve(J.T @ J + 1e-3 * np.eye(6), J.T @ r[use])
+            q = q - step.reshape(2, 3)
+            if k >= phase * (len(gates) - 1) and np.abs(step).max() < 1e-3:
+                break
+        return q, inl
+
+    def __call__(self, mask):
+        """The learned outline placed on this frame (full size, float), or
+        None when there is none or it does not fit (then use the mask)."""
+        if self.tpl is None or mask is None or tuple(mask.shape) != tuple(self.size):
+            self.ok = False
+            return None
+        k = self.scale
+        m = fill_holes(mask[::k, ::k] > 0.5)
+        if m.sum() < 100:
+            self.ok = False
+            return None
+        cnts, _ = cv2.findContours(m.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+        pts = np.concatenate([c[:, 0] for c in cnts]).astype(np.float64)
+        if len(pts) > self.points:
+            pts = pts[np.linspace(0, len(pts) - 1, self.points).astype(int)]
+        q, inl = self._fit(pts, self.q if self.ok and self.q is not None else self._start(m))
+        det = np.linalg.det(q[:, :2])
+        # the outline must still look like the cello: fitting enough of the
+        # visible edge, not squashed or blown up
+        self.ok = inl >= self.min_inliers and 0.5 < det < 2.0
+        self.inliers = inl
+        if not self.ok:
+            return None
+        self.q = q
+        # placed at full size: output pixel x -> outline u = B (x / k) + c
+        H, W = mask.shape
+        A = np.linalg.inv(np.r_[q, [[0, 0, 1]]])[:2]          # outline -> image (1/k px)
+        th, tw = self.tpl.shape
+        corners = np.array([[0, 0, 1], [tw, 0, 1], [0, th, 1], [tw, th, 1]], np.float64) @ A.T * k
+        x0, y0 = np.maximum(0, np.floor(corners.min(0)).astype(int))
+        x1, y1 = np.minimum([W, H], np.ceil(corners.max(0)).astype(int) + 1)
+        if x1 <= x0 or y1 <= y0:
+            self.ok = False
+            return None
+        Mi = np.c_[q[:, :2] / k, q[:, :2] @ np.array([x0, y0]) / k + q[:, 2]]
+        box = cv2.warpAffine(self.tpl.astype(np.float32), Mi, (x1 - x0, y1 - y0),
+                             flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP)
+        out = np.zeros((H, W), np.float32)
+        out[y0:y1, x0:x1] = box
+        return out

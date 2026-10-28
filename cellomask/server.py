@@ -22,7 +22,7 @@ import numpy as np
 
 from .cello3d import CelloPlane, front_face
 from .predict import PlanePredictor, PosePredictor, apply_axis, apply_mask
-from .shape import ShapeMemory
+from .shape import LearnedShape, ShapeMemory, close_across
 from .composite import composite, debug_overlay, mask_roi, shape_alpha
 from .iphone import IPHONE, depth_view
 from .procam3d import Procam3D, correspondences, implausible3d, solve_projector, stable_depth
@@ -336,7 +336,14 @@ class Pipeline(threading.Thread):
         self.plane_t = 0.0             # when the plane was last fitted
         self.pose_pred = PosePredictor()   # where the cello will be when the light lands
         self.shape = ShapeMemory()     # the whole outline while a hand covers part of it
+        # the cello's outline learned alone (Calibrate 3D / Learn), fitted each frame
+        self.learned = LearnedShape(os.path.join(ROOT, "data", "cello_shape.npz"))
+        self.seen = None               # the cello as segmented this frame (for learning)
         self.covered = 0.0             # fraction of the cello covered (hand, arm, bow)
+        # the lit area itself, smoothed like the mask: the neck cut and the
+        # edges of the restored outline moved a few pixels a frame (flicker)
+        self.face_smoother = MaskSmoother(alpha=0.5, hold=2)
+        self.recording = None          # debug: per-frame masks while a recording runs
         self.plane_pred = PlanePredictor()
         self.t_meas = 0.0              # capture time of the frame being drawn (Mac clock)
         self.view3d = None             # (K, quad) used for the current frame, or None (flat)
@@ -535,11 +542,22 @@ class Pipeline(threading.Thread):
             raw = largest_cello(inst) if s["instances"] == "largest" else \
                 np.max(np.stack([d["mask"] for d in inst]), 0)
         seen = self.smoother(raw, frame.shape[:2])
+        if seen is not None and self.axis.last is not None:
+            # the fingerboard slot: gaps up to ~30% of the cello's width
+            a = self.axis.last
+            seen = close_across(seen, a[4], 0.3 * a[3])
         # the whole cello, also where a hand or the bow is in front of it;
         # "dark" keeps only what is seen (the hand then cuts a hole)
+        self.seen = seen
         mask, self.covered = (self.shape(seen) if seen is not None else (None, 0.0))
         if s["hands"] != "paint":
             mask = seen
+        else:
+            # the learned outline when it fits: hands, knees and a mask cut
+            # at its detection box cannot change its shape
+            fitted = self.learned(seen) if seen is not None else None
+            if fitted is not None:
+                mask = fitted
         now = time.time()
         # filters run on capture time: frames arrive unevenly over Wi-Fi
         self.t_meas = (pkt.get("t_cap_mac") if pkt is not None else None) or now
@@ -549,7 +567,19 @@ class Pipeline(threading.Thread):
             self.pose_pred.reset()
         # what gets light: the front face when depth allows, else the mask
         face = self.front_mask(mask, pkt, s)
+        if face is not None:
+            face = self.face_smoother(face, frame.shape[:2])
+        else:
+            self.face_smoother.reset()
         self.face = face
+        rec = self.recording
+        if rec is not None and len(rec["frames"]) < rec["n"]:
+            q = lambda a: None if a is None else (a[::2, ::2] > 0.5)
+            rec["frames"].append({"t": self.t_meas, "raw": q(raw), "seen": q(seen), "whole": q(mask),
+                                  "face": q(face), "n_inst": len(inst), "covered": self.covered,
+                                  "axis": None if axis is None else np.array(axis),
+                                  "proj": None})
+            rec["proj_next"] = True
         self.raw_frame = frame
         self.raw_seq += 1
         if self.projector_window or self.watched("projector"):
@@ -560,6 +590,10 @@ class Pipeline(threading.Thread):
                 pf = np.zeros((self.proj_size[1], self.proj_size[0], 3), np.uint8)
             self.proj_frame = pf
             self.proj_seq += 1
+            rec = self.recording
+            if rec is not None and rec.get("proj_next") and rec["frames"]:
+                rec["frames"][-1]["proj"] = cv2.resize(pf, (480, 270), interpolation=cv2.INTER_AREA)
+                rec["proj_next"] = False
             if pkt is not None and pkt.get("t_recv"):
                 now2 = time.time()
                 self._stage("wait", pkt["t_read"] - pkt["t_recv"])     # queued for segmentation
@@ -996,9 +1030,12 @@ class Pipeline(threading.Thread):
         self.phone.save_ref(d0, K, (ww, hh), before[0]["orientation"])
         self.procam_live = None
         flat = self._apply_stripes(st, region, dbg)
+        # the cello is alone and still for calibrating: learn its outline
+        learned = region is not None and self.learned.learn(region.astype(np.float32))
         return {"ok": True, "markers": sol["n"], "total": 0, "error": round(sol["rms"], 2),
                 "message": f"3D calibration: {self.procam.summary()}. "
-                           f"Flat mapping: {flat['message']}"}
+                           f"Flat mapping: {flat['message']}"
+                           + (". Cello outline learned" if learned else "")}
 
     @staticmethod
     def _decode(pairs, nb):
@@ -1079,6 +1116,8 @@ class Pipeline(threading.Thread):
                 "procam": self.procam.summary() if self.procam else None,
                 "plane": self.plane_state(),
                 "covered": round(100 * self.covered),
+                "shape": {"learned": self.learned.tpl is not None, "fitted": self.learned.ok,
+                          "inliers": round(self.learned.inliers, 2)},
                 "latency": self.latency_state(),
                 "phone": self.phone_state(),
                 "iphone": {"live": IPHONE.live, "fps": round(IPHONE.fps, 1),
@@ -1428,6 +1467,33 @@ def build_app(pipe):
     def spill():
         with calib_lock:
             return pipe.measure_spill()
+
+    @app.post("/api/shape/learn")
+    def learn_shape():
+        """Learn the cello's outline from what is segmented now (the cello
+        alone and still, nobody in front of it)."""
+        seen = pipe.seen
+        if seen is None:
+            raise HTTPException(409, "no cello in view")
+        if not pipe.learned.learn(seen):
+            raise HTTPException(409, "the cello is too small in the image")
+        return {"ok": True, "message": "cello outline learned"}
+
+    @app.post("/api/debug/record")
+    def record(n: int = 90):
+        """Record the next n frames' masks (raw, seen, whole, face) and
+        projector frames to calib_debug/record_<time>.npz, for checking
+        flicker offline."""
+        import pickle
+        pipe.recording = {"n": n, "frames": []}
+        t0 = time.time()
+        while len(pipe.recording["frames"]) < n and time.time() - t0 < n / 5 + 5:
+            time.sleep(0.05)
+        frames, pipe.recording = pipe.recording["frames"], None
+        path = os.path.join(pipe.debug_dir, f"record_{time.time():.0f}.pkl")
+        with open(path, "wb") as f:
+            pickle.dump(frames, f)
+        return {"path": path, "frames": len(frames)}
 
     @app.post("/api/debug/latency")
     def latency_probe():

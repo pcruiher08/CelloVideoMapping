@@ -407,6 +407,8 @@ def main():
         pipe.debug_dir = tempfile.mkdtemp(prefix="cello-test-")   # keep data/calib_debug real
         from cellomask.relocate import PhoneTracker
         pipe.phone = PhoneTracker(path=os.path.join(pipe.debug_dir, "ref.npz"))   # not the real reference
+        from cellomask.shape import LearnedShape
+        pipe.learned = LearnedShape(os.path.join(pipe.debug_dir, "shape.npz"))   # not the real outline
         pipe.source = None
         fake = FakeIPhone(pipe)
         server.IPHONE = fake                       # the pipeline checks for the phone source
