@@ -157,6 +157,16 @@
       <div class="row"><label for="pscale">Scale</label><input type="range" id="pscale" min="0.8" max="1.2" step="0.005"><output></output></div>
     </section>
 
+    <section id="tdSec">
+      <h2>TouchDesigner</h2>
+      <p class="sub" id="liveStatus" style="margin:0 0 8px">–</p>
+      <button class="btn" id="liveScan" style="width:100%">Find NDI / Syphon senders</button>
+      <p class="hint">Video in: in TouchDesigner add an <b>NDI Out TOP</b> (other computer, wired network) or a <b>Syphon Spout Out TOP</b> (this Mac) after the final visual, then Find and pick it in the gallery: it goes on the cello like an image. A portrait texture (about 1:2.4) fits the cello best.</p>
+      <div class="row"><label for="osc_host">OSC to</label><input type="text" id="osc_host" placeholder="TouchDesigner's IP (empty = off)" style="width:100%"></div>
+      <div class="row"><label for="osc_port">Port</label><input type="number" id="osc_port" min="1" max="65535" style="width:100%"></div>
+      <p class="hint">OSC out, every frame, for an <b>OSC In CHOP</b>: /cello/present x y angle size distance lean turn covered, /tuner/freq note cents level, /vibrato/rate extent (tuner values while the tuner runs).</p>
+    </section>
+
     <section id="tunerSec">
       <h2>Tuner</h2>
       <div class="readout" id="readout"></div>
@@ -280,11 +290,17 @@ function setSeg(id, value) {
   document.querySelectorAll(`#${id} button`).forEach(b => b.classList.toggle('on', b.dataset.v === value));
 }
 
+const esc = v => String(v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
 function renderGallery() {
   const g = $('#gallery');
   const live = `<div class="tile live ${state.replacement === 'live:tuner' ? 'active' : ''}" data-name="live:tuner" title="Live tuner graph from the microphone" role="button" tabindex="0">
       <svg viewBox="0 0 40 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M2 12 C6 2, 10 2, 14 12 S22 22, 26 12 S34 2, 38 12"/></svg><span>Live tuner</span></div>`;
-  g.innerHTML = live + state.replacements.map(r => `
+  const found = state.live ? state.live.found : { ndi: [], syphon: [] };
+  const feeds = [...found.ndi.map(n => ['ndi:' + n, 'NDI', n]), ...found.syphon.map(n => ['syphon:' + n, 'Syphon', n])];
+  const tdTiles = feeds.map(([name, kind, label]) => `<div class="tile live ${state.replacement === name ? 'active' : ''}" data-name="${esc(name)}" title="${kind}: ${esc(label)}" role="button" tabindex="0">
+      <svg viewBox="0 0 40 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><rect x="3" y="4" width="26" height="16" rx="2"/><path d="M29 10 L37 6 V18 L29 14"/></svg><span>${kind}</span><span style="font-size:9px;opacity:.7;max-width:90%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(label)}</span></div>`).join('');
+  g.innerHTML = live + tdTiles + state.replacements.map(r => `
     <div class="tile ${r.name === state.replacement ? 'active' : ''}" data-name="${r.name}" title="${r.name}" role="button" tabindex="0">
       <img src="/thumbs/${encodeURIComponent(r.name)}.jpg" alt="${r.name}" loading="lazy">
       ${r.kind === 'video' ? '<span class="vid">▶ video</span>' : ''}
@@ -318,6 +334,8 @@ function renderControls() {
     el.nextElementSibling.textContent = s[k];
   }
   $('#matte').checked = s.matte; $('#flip').checked = s.flip;
+  if (document.activeElement !== $('#osc_host')) $('#osc_host').value = s.osc_host;
+  if (document.activeElement !== $('#osc_port')) $('#osc_port').value = s.osc_port;
 }
 
 function renderStats() {
@@ -353,9 +371,21 @@ async function loadMics() {
 }
 $('#mic').addEventListener('change', async e => { await post('/api/mic', { device: e.target.value }); refresh(false); });
 
+function renderLive() {
+  const l = state.live; if (!l) return;
+  const c = l.current, o = l.osc;
+  const n = l.found.ndi.length + l.found.syphon.length;
+  $('#liveStatus').innerHTML = (c
+    ? (c.live ? `<span class="in">Receiving ${esc(c.name.replace(/^(ndi|syphon):/, m => m === 'ndi:' ? 'NDI ' : 'Syphon '))}</span> · ${c.size ? c.size[0] + '×' + c.size[1] : ''} · ${c.fps} fps`
+              : `<span class="near">Waiting for ${esc(c.name)}</span>${c.error ? ' · ' + esc(c.error) : ''}`)
+    : `${n} sender${n === 1 ? '' : 's'} found · not used (pick one in the gallery)`)
+    + ' · OSC ' + (o.target ? `to ${o.target[0]}:${o.target[1]} (${o.sent} frames)` : 'off') + (o.error ? ` <span class="near">${esc(o.error)}</span>` : '');
+}
+
 async function refresh(full = true) {
   state = await api('/api/state');
   renderStats();
+  renderLive();
   if (full) { renderGallery(); renderSources(); renderControls(); }
 }
 
@@ -448,6 +478,13 @@ async function calibrate(method) {
 $('#calibrate').addEventListener('click', () => calibrate('structured'));
 $('#calibrate3d').addEventListener('click', () => calibrate('lidar'));
 $('#calibMarkers').addEventListener('click', e => { e.preventDefault(); calibrate('markers'); });
+$('#liveScan').addEventListener('click', async () => {
+  const b = $('#liveScan'); b.disabled = true; b.textContent = 'Looking…';
+  try { state.live = await post('/api/live/scan', {}); renderGallery(); renderLive(); } catch {}
+  b.disabled = false; b.textContent = 'Find NDI / Syphon senders';
+});
+$('#osc_host').addEventListener('change', e => set({ osc_host: e.target.value.trim() }));
+$('#osc_port').addEventListener('change', e => set({ osc_port: parseInt(e.target.value, 10) || 9000 }));
 $('#learnShape').addEventListener('click', async () => {
   try { const r = await post('/api/shape/learn', {}); $('#err').hidden = false; $('#err').textContent = r.message; }
   catch (err) { $('#err').hidden = false; $('#err').textContent = err.message; }

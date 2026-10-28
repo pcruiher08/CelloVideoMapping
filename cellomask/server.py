@@ -23,6 +23,7 @@ import numpy as np
 from .cello3d import CelloPlane, front_face
 from .predict import PlanePredictor, PosePredictor, apply_axis, apply_mask
 from .shape import LearnedShape, ShapeMemory, close_across
+from .live import LiveMedia, OscOut, ndi_sources, open_live, syphon_sources
 from .composite import composite, debug_overlay, mask_roi, shape_alpha
 from .iphone import IPHONE, depth_view
 from .procam3d import Procam3D, correspondences, implausible3d, solve_projector, stable_depth
@@ -63,6 +64,8 @@ DEFAULTS = {
     "surface": "front",      # front (the body's top only, from depth) | whole (the full mask)
     "inset_mm": 6.0,         # front: edge pulled in so no light reaches the ribs
     "hands": "paint",        # a hand / arm over the cello: paint (the whole cello shape) | dark (cut out)
+    "osc_host": "",          # TouchDesigner's address for the cello's state over OSC ("" = off)
+    "osc_port": 9000,
     "predict_ms": 250,       # draw the cello this far ahead of its capture (0 = off); the light lags ~350 ms
 }
 
@@ -366,6 +369,8 @@ class Pipeline(threading.Thread):
         self.debug_dir = os.path.join(ROOT, "data", "calib_debug")
         self.min_wait = 0.0          # measured camera delay x 0.8 while calibrating (iPhone)
         self.tuner = None            # PitchTracker, opened on first use
+        self.osc = OscOut()          # the cello's state to TouchDesigner
+        self.live_found = {"ndi": [], "syphon": [], "when": 0.0}   # NDI / Syphon senders seen
         self.mic = None              # requested input device (None = default)
         self.seq = 0
         self.fps = 0.0
@@ -434,7 +439,7 @@ class Pipeline(threading.Thread):
             self.ensure_tuner()
             media = TunerMedia(self)
         else:
-            media = Media(path)
+            media = open_live(path) or Media(path)   # NDI / Syphon, or a file
         with self.lock:
             if self.replacement is not None:
                 self.replacement.close()
@@ -446,6 +451,7 @@ class Pipeline(threading.Thread):
                 if k in DEFAULTS:
                     self.settings[k] = type(DEFAULTS[k])(v)
             self.smoother.alpha = self.settings["smooth"]
+            self.osc.set_target(self.settings["osc_host"].strip(), self.settings["osc_port"])
             self.axis.follow = self.settings["rotation"] == "follow"
             if self.tuner is not None:
                 self.tuner.a4 = self.settings["a4"]
@@ -563,6 +569,9 @@ class Pipeline(threading.Thread):
         self.t_meas = (pkt.get("t_cap_mac") if pkt is not None else None) or now
         axis = self.axis(mask, now) if mask is not None else None
         quad = self.update_3d(frame, seen, axis, pkt, s, now)    # the plane from the cello's own depth
+        if self.osc.client is not None:
+            self.osc.send(self, frame.shape, axis,
+                          self.tuner.snapshot() if self.tuner is not None and self.tuner.running else None)
         if not self.pose_pred.update(mask, self.t_meas) and mask is None:
             self.pose_pred.reset()
         # what gets light: the front face when depth allows, else the mask
@@ -1116,8 +1125,8 @@ class Pipeline(threading.Thread):
                 "procam": self.procam.summary() if self.procam else None,
                 "plane": self.plane_state(),
                 "covered": round(100 * self.covered),
-                "shape": {"learned": self.learned.tpl is not None, "fitted": self.learned.ok,
-                          "inliers": round(self.learned.inliers, 2)},
+                "shape": {"learned": self.learned.tpl is not None, "fitted": bool(self.learned.ok),
+                          "inliers": round(float(self.learned.inliers), 2)},
                 "latency": self.latency_state(),
                 "phone": self.phone_state(),
                 "iphone": {"live": IPHONE.live, "fps": round(IPHONE.fps, 1),
@@ -1378,7 +1387,21 @@ def build_app(pipe):
             "error": pipe.error,
             "tuner": tuner_state(pipe),
             "projector": pipe.projector_state(),
+            "live": live_state(),
         }
+
+    def live_state():
+        r = pipe.replacement
+        return {"found": {k: pipe.live_found[k] for k in ("ndi", "syphon")},
+                "current": r.state() if isinstance(r, LiveMedia) else None,
+                "osc": {"target": pipe.osc.target, "sent": pipe.osc.sent, "error": pipe.osc.error}}
+
+    @app.post("/api/live/scan")
+    def live_scan():
+        """Look for NDI senders on the network and Syphon servers on this
+        Mac (TouchDesigner's NDI Out / Syphon Spout Out TOPs)."""
+        pipe.live_found = {"ndi": ndi_sources(wait=1.5), "syphon": syphon_sources(), "when": time.time()}
+        return live_state()
 
     def tuner_state(pipe):
         if pipe.tuner is None:
@@ -1564,6 +1587,10 @@ def build_app(pipe):
 
     @app.post("/api/replacement")
     def choose_replacement(body: dict = Body(...)):
+        name = body.get("name", "")
+        if name.startswith(("ndi:", "syphon:")):
+            pipe.set_replacement(name)
+            return {"name": name}
         if body.get("name") == TUNER:
             pipe.set_replacement(TUNER)
             return {"name": TUNER}

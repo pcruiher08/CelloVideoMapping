@@ -19,7 +19,7 @@ DEST="$STAGE/$NAME"
 mkdir -p "$DEST/models" "$DEST/data" dist
 
 cp -R bowtrack cellomask "$DEST/"
-cp README.md requirements.txt run.py test_synthetic.py test_tuner.py test_projector.py test_lidar.py test_predict.py test_shape.py install.sh run.sh package.sh "$DEST/"
+cp README.md requirements.txt run.py test_synthetic.py test_tuner.py test_projector.py test_lidar.py test_predict.py test_shape.py test_live.py install.sh run.sh package.sh "$DEST/"
 mkdir -p "$DEST/ios" && rsync -a --exclude build --exclude "*.xcodeproj" ios/CelloDepth "$DEST/ios/"
 for f in config.json warp.json; do [ -f "$f" ] && cp "$f" "$DEST/"; done
 cp models/cello-seg.pt "$DEST/models/"

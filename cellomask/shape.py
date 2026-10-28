@@ -306,7 +306,7 @@ class LearnedShape:
         det = np.linalg.det(q[:, :2])
         # the outline must still look like the cello: fitting enough of the
         # visible edge, not squashed or blown up
-        self.ok = inl >= self.min_inliers and 0.5 < det < 2.0
+        self.ok = bool(inl >= self.min_inliers and 0.5 < det < 2.0)
         self.inliers = inl
         if not self.ok:
             return None
