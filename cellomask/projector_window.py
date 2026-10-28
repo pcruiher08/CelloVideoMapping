@@ -6,11 +6,20 @@ polling, which matters for how far the light trails a moving cello.
 
 Keys in the window:  f  toggle fullscreen   b  blackout on/off
                      esc  leave fullscreen   q  quit the app
+
+The web page's Projector section lists the screens and moves the window to
+another one live (pipe.screen_request, handled here on the main thread).
 """
 
 import time
 
 import numpy as np
+
+
+def list_screens():
+    import pyglet
+    return [{"index": i, "width": s.width, "height": s.height, "x": s.x, "y": s.y}
+            for i, s in enumerate(pyglet.display.get_display().get_screens())]
 
 
 def pick_screen(spec):
@@ -25,12 +34,13 @@ def pick_screen(spec):
     if len(screens) == 1:
         print("only one screen: is the projector connected, and set to extend "
               "(not mirror) in System Settings > Displays? Using the main screen.")
-    return screens[idx]
+    return idx, screens[idx]
 
 
 def open_window(pipe, spec="auto", fullscreen=True):
     import pyglet
-    screen = pick_screen(spec)
+    idx, screen = pick_screen(spec)
+    pipe.screens, pipe.screen_index = list_screens(), idx
     if fullscreen and len(pyglet.display.get_display().get_screens()) == 1:
         # no projector connected: a black fullscreen window with the pointer
         # hidden over the only screen looked like a frozen Mac
@@ -55,9 +65,29 @@ def run_window(pipe, win):
     import pyglet
     from pyglet import gl
 
-    state = {"seq": -1, "image": None, "before_blackout": "content", "drawn": -1, "bright": None}
+    state = {"seq": -1, "image": None, "before_blackout": "content", "drawn": -1, "bright": None,
+             "listed": time.time()}
+
+    def move(idx):
+        """Fullscreen on screen `idx` (from the web page)."""
+        screens = pyglet.display.get_display().get_screens()
+        if not 0 <= idx < len(screens):
+            return
+        s = screens[idx]
+        win.set_fullscreen(True, screen=s)
+        win.set_mouse_visible(False)
+        pipe.proj_size = (s.width, s.height)
+        pipe.screen_index = idx
+        print(f"projector window -> screen #{idx} ({s.width}x{s.height})")
 
     def update(dt):
+        req = pipe.screen_request
+        if req is not None:
+            pipe.screen_request = None
+            move(req)
+        if time.time() - state["listed"] > 2.0:     # a projector plugged in later shows up
+            state["listed"] = time.time()
+            pipe.screens = list_screens()
         if pipe.proj_seq == state["seq"] or pipe.proj_frame is None:
             return
         state["seq"] = pipe.proj_seq

@@ -344,6 +344,8 @@ class Pipeline(threading.Thread):
         self.learned = LearnedShape(os.path.join(ROOT, "data", "cello_shape.npz"))
         self.seen = None               # the cello as segmented this frame (for learning)
         self.covered = 0.0             # fraction of the cello covered (hand, arm, bow)
+        self.screens, self.screen_index = [], None   # displays, and the projector window's
+        self.screen_request = None     # move the projector window there (main thread does it)
         # the lit area itself, smoothed like the mask: the neck cut and the
         # edges of the restored outline moved a few pixels a frame (flicker)
         self.face_smoother = MaskSmoother(alpha=0.5, hold=2)
@@ -1164,6 +1166,9 @@ class Pipeline(threading.Thread):
         return {"mode": self.proj_mode, "size": list(self.proj_size),
                 "calibrating": self.calibrating,
                 "window": self.projector_window,
+                "screens": self.screens, "screen": self.screen_index,
+                "size_mismatch": (None if self.procam is None or tuple(self.procam.proj_size) == tuple(self.proj_size)
+                                  else [list(self.procam.proj_size), list(self.proj_size)]),
                 "calibrated": bool(c and c.ok),
                 "markers": c.markers if c else 0, "error": c.error if c else None,
                 "dx": c.dx if c else 0.0, "dy": c.dy if c else 0.0,
@@ -1475,6 +1480,8 @@ def build_app(pipe):
         mode = body.get("mode")
         if mode in ("content", "white", "outline", "grid", "black"):
             pipe.proj_mode = mode
+        if "screen" in body and pipe.projector_window:
+            pipe.screen_request = int(body["screen"])
         c = pipe.calib
         if c is not None and any(k in body for k in ("dx", "dy", "scale")):
             c.dx = float(body.get("dx", c.dx))

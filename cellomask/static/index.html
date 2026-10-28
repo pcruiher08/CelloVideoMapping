@@ -120,6 +120,8 @@
     <section id="projSec">
       <h2>Projector</h2>
       <p class="sub" id="projStatus" style="margin:0 0 10px">–</p>
+      <div class="row"><label for="screenSel">Screen</label><select id="screenSel"></select></div>
+      <p class="sub" id="screenNote" style="margin:0 0 10px"></p>
       <button class="btn" id="calibrate" style="width:100%">Calibrate (stripes, ~15 s)</button>
       <p class="hint">Put the cello where it will be and keep everything still: the projector flashes black-and-white stripes for about 15 s and the mapping is fitted on the cello itself. No board needed. <a href="#" id="calibMarkers" style="color:var(--muted)">Marker grid instead (needs a flat board)</a></p>
       <p class="sub" id="lidarStatus" style="margin:12px 0 6px">–</p>
@@ -429,6 +431,15 @@ function renderProjector() {
       : ph.tracking ? `phone moved ${ph.moved_cm} cm / ${ph.moved_deg}° (corrected)`
       : '<span class="near">phone position not confirmed (room view changed?)</span>');
   }
+  const sel = $('#screenSel');
+  if (p.screens && document.activeElement !== sel) {
+    sel.innerHTML = p.screens.map(s => `<option value="${s.index}">#${s.index}: ${s.width}×${s.height}${s.x === 0 && s.y === 0 ? ' (main)' : ''}</option>`).join('');
+    if (p.screen !== null && p.screen !== undefined) sel.value = String(p.screen);
+  }
+  $('#screenNote').innerHTML = !p.window ? 'No projector window (start with ./show.sh or --projector)'
+    : p.screens && p.screens.length < 2 ? '<span class="near">Only one screen: connect the projector and set it to extend (System Settings › Displays)</span>'
+    : p.size_mismatch ? `<span class="near">Calibrated for ${p.size_mismatch[0].join('×')}, this screen is ${p.size_mismatch[1].join('×')}: set the projector's resolution to match, or Calibrate 3D</span>`
+    : 'Pick the projector here: the window moves to it';
   const sh = p.shape;
   if (sh) $('#shapeStatus').innerHTML = !sh.learned
     ? '<span class="near">Outline not learned</span>: with the cello alone and still, press Learn (Calibrate 3D also learns it)'
@@ -485,6 +496,9 @@ $('#liveScan').addEventListener('click', async () => {
 });
 $('#osc_host').addEventListener('change', e => set({ osc_host: e.target.value.trim() }));
 $('#osc_port').addEventListener('change', e => set({ osc_port: parseInt(e.target.value, 10) || 9000 }));
+$('#screenSel').addEventListener('change', async e => {
+  state.projector = await post('/api/projector', { screen: parseInt(e.target.value, 10) });
+});
 $('#learnShape').addEventListener('click', async () => {
   try { const r = await post('/api/shape/learn', {}); $('#err').hidden = false; $('#err').textContent = r.message; }
   catch (err) { $('#err').hidden = false; $('#err').textContent = err.message; }
