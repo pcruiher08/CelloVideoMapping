@@ -99,7 +99,7 @@ class IPhoneSource:
         self.last_t = 0.0
         self.fps = 0.0
         self.kb = None                   # mean message size (KB): Wi-Fi throughput check
-        self.diag = {}                   # the phone's ARKit frame rate, thermal state, low power
+        self.diag = {}                   # capture source, its frame rate, thermal state, low power
         self.error = None
         self.outbox = []            # commands for the phone, sent by the WebSocket handler
         # clock sync (NTP-style ping/pong): mac time = phone time + offset;
@@ -137,7 +137,7 @@ class IPhoneSource:
             return
         hd["t_recv"] = now
         self.kb = len(msg) / 1024 if self.kb is None else 0.9 * self.kb + 0.1 * len(msg) / 1024
-        self.diag = {k: hd.get(k) for k in ("ar_fps", "thermal", "lowpower")}
+        self.diag = {k: hd.get(k) for k in ("src", "cam_fps", "thermal", "lowpower")}
         if "t_cap" in hd:
             self._stage("arkit", hd["t_deliver"] - hd["t_cap"])       # capture -> app
             self._stage("encode", hd["t_send"] - hd["t_deliver"])     # JPEG + depth packing

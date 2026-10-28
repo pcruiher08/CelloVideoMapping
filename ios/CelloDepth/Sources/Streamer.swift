@@ -2,9 +2,10 @@ import ARKit
 import CoreImage
 import UIKit
 
-/// Streams every ARKit frame it can keep up with to the Mac over a WebSocket:
-/// a JPEG of the colour image, the LiDAR depth map and its confidence, and the
-/// camera intrinsics. Up to two frames are in flight (one encoding while the
+/// Streams every camera frame it can keep up with to the Mac over a WebSocket:
+/// a JPEG of the colour image, the LiDAR depth map (and its confidence, with
+/// ARKit), and the camera intrinsics. Frames come from the LiDAR camera
+/// directly (AVFoundation, the default: cooler, less delay) or from ARKit. Up to two frames are in flight (one encoding while the
 /// other is on the wire); frames arriving beyond that are dropped, so the Mac
 /// always gets a recent view. One at a time capped the stream at ~20 fps:
 /// each frame waited for the previous send to finish before encoding.
@@ -25,11 +26,11 @@ final class Streamer: NSObject, ObservableObject, ARSessionDelegate, URLSessionW
     private var inFlight = 0            // frames encoding or sending; main thread only
     private let maxInFlight = 2
     private var sent = 0
-    // what ARKit delivers, before any frame is dropped here, and why it may
-    // be slow (sent to the Mac in each header)
-    private var arFrames = 0
-    private var arStart = CACurrentMediaTime()
-    private var arFps = 0.0
+    // what the camera delivers, before any frame is dropped here, and why it
+    // may be slow (sent to the Mac in each header)
+    private var camFrames = 0
+    private var camStart = CACurrentMediaTime()
+    private var camFps = 0.0
     private var lastReport = CACurrentMediaTime()
     private var orientation = "portrait"
     // the image the Mac works at (its calibrations are in these pixels) and
@@ -40,17 +41,47 @@ final class Streamer: NSObject, ObservableObject, ARSessionDelegate, URLSessionW
     private let outWidth: CGFloat = 1280
     private let sendWidth: CGFloat = 960
 
+    enum Capture: String { case camera, arkit }
+    @Published private(set) var capture: Capture =
+        Capture(rawValue: UserDefaults.standard.string(forKey: "capture") ?? "") ?? .camera
+
     /// Owned here, not by the preview view, so the preview can be removed
     /// while streaming: drawing the camera on the phone's screen at 60 fps
     /// is heat the phone does not need, and a hot phone (thermal state
     /// critical) gets ARKit throttled to 20 fps.
     let session = ARSession()
+    let camera = DepthCamera()
     private var started = false
 
     func start() {
         guard !started else { return }
         started = true
         session.delegate = self
+        camera.onFrame = { [weak self] image, K, depth, ts in
+            let tDeliver = CACurrentMediaTime()
+            DispatchQueue.main.async {
+                self?.handle(image: image, K: K, depth: depth, confidence: nil, ts: ts, tDeliver: tDeliver)
+            }
+        }
+        UIDevice.current.beginGeneratingDeviceOrientationNotifications()
+        run(capture)
+    }
+
+    /// Switch between the LiDAR camera and ARKit (they cannot share the camera).
+    func use(_ c: Capture) {
+        guard c != capture else { return }
+        UserDefaults.standard.set(c.rawValue, forKey: "capture")
+        if capture == .arkit { session.pause() } else { camera.stop() }
+        locked = false
+        capture = c
+        run(c)
+    }
+
+    private func run(_ c: Capture) {
+        if c == .camera {
+            if let problem = camera.start() { status = problem }
+            return
+        }
         guard ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) else {
             status = "this iPhone has no LiDAR"
             return
@@ -63,7 +94,6 @@ final class Streamer: NSObject, ObservableObject, ARSessionDelegate, URLSessionW
             config.videoFormat = format
         }
         session.run(config)
-        UIDevice.current.beginGeneratingDeviceOrientationNotifications()
     }
 
     func connect(host: String) {
@@ -141,7 +171,9 @@ final class Streamer: NSObject, ObservableObject, ARSessionDelegate, URLSessionW
     private(set) var locked = false
 
     private func command(_ cmd: String) {
-        guard let device = ARWorldTrackingConfiguration.configurableCaptureDeviceForPrimaryCamera else {
+        let dev = capture == .camera ? camera.device
+            : ARWorldTrackingConfiguration.configurableCaptureDeviceForPrimaryCamera
+        guard let device = dev else {
             status = "cannot lock the exposure on this iPhone"
             return
         }
@@ -182,6 +214,15 @@ final class Streamer: NSObject, ObservableObject, ARSessionDelegate, URLSessionW
     }
 
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
+        guard let depth = frame.sceneDepth else { return }
+        handle(image: frame.capturedImage, K: frame.camera.intrinsics, depth: depth.depthMap,
+               confidence: depth.confidenceMap, ts: frame.timestamp, tDeliver: CACurrentMediaTime())
+    }
+
+    /// One frame from either source (main thread): `K` in pixels of `image`,
+    /// `depth` Float32 metres, `ts` the capture time on the host clock.
+    private func handle(image: CVPixelBuffer, K: simd_float3x3, depth: CVPixelBuffer,
+                        confidence: CVPixelBuffer?, ts: TimeInterval, tDeliver: TimeInterval) {
         switch UIDevice.current.orientation {
         case .portrait: orientation = "portrait"
         case .portraitUpsideDown: orientation = "portraitUpsideDown"
@@ -189,29 +230,23 @@ final class Streamer: NSObject, ObservableObject, ARSessionDelegate, URLSessionW
         case .landscapeRight: orientation = "landscapeRight"
         default: break                   // face up/down: keep the last one
         }
-        arFrames += 1
+        camFrames += 1
         let tNow = CACurrentMediaTime()
-        if tNow - arStart >= 1 {
-            arFps = Double(arFrames) / (tNow - arStart)
-            arFrames = 0
-            arStart = tNow
+        if tNow - camStart >= 1 {
+            camFps = Double(camFrames) / (tNow - camStart)
+            camFrames = 0
+            camStart = tNow
         }
-        guard let task = task, opened, inFlight < maxInFlight, let depth = frame.sceneDepth else { return }
+        guard let task = task, opened, inFlight < maxInFlight else { return }
         inFlight += 1
-        let tDeliver = CACurrentMediaTime()   // ARKit hands the frame over
-        let image = frame.capturedImage
-        let K = frame.camera.intrinsics
-        let ts = frame.timestamp
-        let depthMap = depth.depthMap
-        let confidence = depth.confidenceMap
         let orient = orientation
         let isLocked = locked
-        let diag: [String: Any] = ["ar_fps": arFps,
+        let diag: [String: Any] = ["cam_fps": camFps, "src": capture.rawValue,
                                    "thermal": ProcessInfo.processInfo.thermalState.rawValue,
                                    "lowpower": ProcessInfo.processInfo.isLowPowerModeEnabled]
         queue.async { [weak self] in
             guard let self = self else { return }
-            let data = self.pack(image: image, K: K, depth: depthMap, confidence: confidence,
+            let data = self.pack(image: image, K: K, depth: depth, confidence: confidence,
                                  ts: ts, orientation: orient, locked: isLocked, tDeliver: tDeliver,
                                  diag: diag)
             task.send(.data(data)) { err in
@@ -272,7 +307,7 @@ final class Streamer: NSObject, ObservableObject, ARSessionDelegate, URLSessionW
             CVPixelBufferUnlockBaseAddress(c, .readOnly)
         }
 
-        // intrinsics are for the full sensor image; simd is column-major
+        // intrinsics are for the full camera image; simd is column-major
         let header: [String: Any] = [
             "w": Int((iw * s).rounded()), "h": Int((ih * s).rounded()),
             "fx": Double(K[0][0]) * Double(s), "fy": Double(K[1][1]) * Double(s),
