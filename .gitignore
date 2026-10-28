@@ -1,0 +1,25 @@
+# environments and caches
+.venv/
+.tools/
+__pycache__/
+*.pyc
+.DS_Store
+
+# build outputs
+dist/
+ios/CelloDepth/build/
+# generated from project.yml: cd ios/CelloDepth && xcodegen
+ios/CelloDepth/*.xcodeproj/
+
+# training runs and downloaded weights (only the trained cello model is kept)
+runs/
+runs_train.log
+*.ts
+models/*
+!models/cello-seg.pt
+
+# data: datasets, calibration captures and per-machine calibrations stay
+# local; the replacement images and sample sources ship with the app
+data/*
+!data/replacements/
+!data/sources/

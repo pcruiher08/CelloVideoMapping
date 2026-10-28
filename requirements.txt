@@ -1,0 +1,19 @@
+opencv-python>=4.10
+# ultralytics on macOS excludes numpy 2.0-2.3.4, and >=2.3.5 needs Python
+# 3.11+, so on this Python 3.10 venv numpy resolves to 1.26.
+numpy>=1.26
+python-osc>=1.8
+pyobjc-framework-AVFoundation>=10 ; sys_platform == "darwin"
+moderngl>=5.12
+pyglet>=2.1
+# cello segmentation (cellomask/). ultralytics is pinned to the version the
+# model was trained and tested with; it changes quickly between releases.
+torch>=2.4
+torchvision>=0.19
+ultralytics==8.4.183
+fastapi>=0.115
+uvicorn>=0.30
+websockets>=12      # the iPhone LiDAR stream (/ws/iphone)
+python-multipart>=0.0.9
+# live tuner (microphone). Linux also needs: sudo apt install libportaudio2
+sounddevice>=0.4.6

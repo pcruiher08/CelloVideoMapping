@@ -1,0 +1,475 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cello Replace</title>
+<style>
+  :root {
+    --bg: #0e0d0c; --panel: #171513; --line: #2a2622; --text: #ece6df;
+    --muted: #8f867c; --accent: #e08a3c; --accent-ink: #1a0f05; --ok: #7fc48b; --warn: #e0b04a;
+    --radius: 10px;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.4 ui-sans-serif, -apple-system, "SF Pro Text", "Helvetica Neue", sans-serif; }
+  header { display: flex; align-items: center; gap: 16px; padding: 12px 20px; border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 15px; font-weight: 600; margin: 0; letter-spacing: .02em; }
+  header h1 span { color: var(--accent); }
+  .stats { display: flex; gap: 14px; color: var(--muted); font: 12px ui-monospace, "SF Mono", monospace; margin-left: auto; flex-wrap: wrap; }
+  .stats b { color: var(--text); font-weight: 500; }
+  .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--muted); margin-right: 5px; vertical-align: 1px; }
+  .dot.on { background: var(--ok); } .dot.warn { background: var(--warn); }
+
+  main { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 16px; padding: 16px 20px; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+
+  .stage { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+  .views { display: grid; gap: 10px; }
+  .views.split { grid-template-columns: 1fr 1fr; }
+  .view { position: relative; background: #000; border-radius: var(--radius); overflow: hidden; aspect-ratio: 16 / 9; border: 1px solid var(--line); }
+  .view img { width: 100%; height: 100%; object-fit: contain; display: block; }
+  .view .tag { position: absolute; left: 10px; top: 8px; font: 11px ui-monospace, monospace; color: var(--muted);
+               background: rgba(0,0,0,.55); padding: 2px 7px; border-radius: 5px; text-transform: uppercase; letter-spacing: .06em; }
+  .toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+  aside { display: flex; flex-direction: column; gap: 14px; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; }
+  section h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 10px; font-weight: 600; }
+
+  .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(72px, 1fr)); gap: 8px; }
+  .tile { position: relative; aspect-ratio: 1; border-radius: 8px; overflow: hidden; border: 2px solid transparent;
+          background: #000; cursor: pointer; padding: 0; }
+  .tile img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .tile.active { border-color: var(--accent); }
+  .tile .vid { position: absolute; right: 4px; bottom: 4px; font-size: 10px; background: rgba(0,0,0,.7); color: #fff; padding: 1px 4px; border-radius: 3px; }
+  .tile .del { position: absolute; right: 3px; top: 3px; width: 18px; height: 18px; border-radius: 50%; border: 0;
+               background: rgba(0,0,0,.7); color: #fff; font-size: 12px; line-height: 18px; padding: 0; cursor: pointer; display: none; }
+  .tile:hover .del { display: block; }
+  .drop { aspect-ratio: 1; border: 1.5px dashed var(--line); border-radius: 8px; display: grid; place-items: center;
+          color: var(--muted); font-size: 22px; cursor: pointer; background: transparent; }
+  .drop:hover, .drop.over { border-color: var(--accent); color: var(--accent); }
+
+  .seg { display: flex; background: #0b0a09; border: 1px solid var(--line); border-radius: 8px; padding: 2px; }
+  .seg button { flex: 1; border: 0; background: transparent; color: var(--muted); padding: 6px 8px; border-radius: 6px; cursor: pointer; font: inherit; font-size: 13px; }
+  .seg button.on { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
+
+  .row { display: grid; grid-template-columns: 82px 1fr 40px; align-items: center; gap: 8px; margin-top: 10px; }
+  .row label { color: var(--muted); font-size: 12px; }
+  .row output { font: 12px ui-monospace, monospace; text-align: right; color: var(--text); }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  .check { display: flex; align-items: center; gap: 8px; margin-top: 10px; color: var(--muted); font-size: 13px; cursor: pointer; }
+  .check input { accent-color: var(--accent); }
+
+  select, .btn { background: #0b0a09; color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; font: inherit; font-size: 13px; }
+  select { width: 100%; }
+  .btn { cursor: pointer; text-decoration: none; display: inline-block; }
+  .btn:hover { border-color: var(--accent); }
+  .hint { color: var(--muted); font-size: 12px; margin: 8px 0 0; }
+  .tile.live { display: grid; place-items: center; align-content: center; gap: 2px; background: #0b0a09; color: var(--accent); }
+  .tile.live svg { width: 60%; height: auto; }
+  .tile.live span { font-size: 10px; color: var(--text); letter-spacing: .04em; }
+  .readout { display: grid; grid-template-columns: auto 1fr; align-items: baseline; gap: 4px 14px; }
+  .readout .big { font: 600 34px/1 ui-sans-serif, -apple-system, sans-serif; grid-row: span 2; min-width: 64px; }
+  .readout .big small { font-size: 15px; color: var(--muted); font-weight: 500; }
+  .readout .c { font: 15px ui-monospace, monospace; }
+  .readout .sub { font: 12px ui-monospace, monospace; color: var(--muted); }
+  .readout .vib { grid-column: 1 / -1; font: 13px ui-monospace, monospace; color: var(--muted); margin-top: 6px; }
+  .readout .vib b { color: var(--accent); font-weight: 600; }
+  .in { color: var(--ok); } .near { color: var(--warn); } .off { color: #e5604a; }
+  .note { color: var(--warn); font-size: 12px; margin: 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Cello <span>Replace</span></h1>
+  <div class="stats">
+    <span><span class="dot" id="dot"></span><b id="inst">–</b> cello</span>
+    <span>fps <b id="fps">–</b></span>
+    <span>seg <b id="segms">–</b> ms</span>
+    <span>model <b id="model">–</b></span>
+  </div>
+</header>
+
+<main>
+  <div class="stage">
+    <div class="toolbar">
+      <div class="seg" id="viewSeg" style="width: 540px">
+        <button data-v="output" class="on">Output</button>
+        <button data-v="debug">Mask</button>
+        <button data-v="split">Side by side</button>
+        <button data-v="tuner">Tuner</button>
+        <button data-v="projector">Projector</button>
+        <button data-v="depth">Depth</button>
+      </div>
+      <a class="btn" href="/output" target="_blank" rel="noopener">Open projector output ↗</a>
+      <a class="btn" href="/output?view=tuner" target="_blank" rel="noopener">Tuner only ↗</a>
+    </div>
+    <div class="views" id="views"></div>
+    <p class="note" id="err" hidden></p>
+  </div>
+
+  <aside>
+    <section>
+      <h2>Replacement</h2>
+      <div class="gallery" id="gallery"></div>
+      <p class="hint">Drop an image or video, or click +. The <i>test-grid</i> shows which way is up.</p>
+      <input type="file" id="replFile" accept="image/*,video/*" hidden>
+    </section>
+
+    <section id="projSec">
+      <h2>Projector</h2>
+      <p class="sub" id="projStatus" style="margin:0 0 10px">–</p>
+      <button class="btn" id="calibrate" style="width:100%">Calibrate (stripes, ~15 s)</button>
+      <p class="hint">Put the cello where it will be and keep everything still: the projector flashes black-and-white stripes for about 15 s and the mapping is fitted on the cello itself. No board needed. <a href="#" id="calibMarkers" style="color:var(--muted)">Marker grid instead (needs a flat board)</a></p>
+      <p class="sub" id="lidarStatus" style="margin:12px 0 6px">–</p>
+      <div class="seg" id="mapSeg" style="margin:6px 0">
+        <button data-v="3d">3D (follows lean)</button>
+        <button data-v="flat">Flat</button>
+      </div>
+      <p class="sub" id="planeStatus" style="margin:0 0 8px">–</p>
+      <button class="btn" id="calibrate3d" style="width:100%">Calibrate 3D (iPhone LiDAR, ~25 s)</button>
+      <p class="hint">Needs the iPhone LiDAR source (CelloDepth app → Connect, phone mounted beside the projector). Solves the projector's lens and position in 3D from the stripes plus depth; the lit area must include different depths (cello in front of the wall, some floor). Also refits the flat mapping above.</p>
+      <img id="calibView" alt="What the camera saw when calibrating" hidden style="width:100%;margin-top:8px;border-radius:8px;border:1px solid var(--line)">
+      <div class="seg" id="projModeSeg" style="margin-top:10px">
+        <button data-v="content">Content</button>
+        <button data-v="white">White</button>
+        <button data-v="outline">Outline</button>
+        <button data-v="grid">Grid</button>
+        <button data-v="black">Black</button>
+      </div>
+      <p class="hint" id="projModeHint"></p>
+      <div class="row"><label for="pdx">Shift X</label><input type="range" id="pdx" min="-150" max="150" step="1"><output></output></div>
+      <div class="row"><label for="pdy">Shift Y</label><input type="range" id="pdy" min="-150" max="150" step="1"><output></output></div>
+      <div class="row"><label for="pscale">Scale</label><input type="range" id="pscale" min="0.8" max="1.2" step="0.005"><output></output></div>
+    </section>
+
+    <section id="tunerSec">
+      <h2>Tuner</h2>
+      <div class="readout" id="readout"></div>
+      <div style="margin-top:10px"><select id="mic" aria-label="Microphone"></select></div>
+      <div class="seg" id="layoutSeg" style="margin-top:10px">
+        <button data-v="horizontal">Horizontal</button>
+        <button data-v="vertical">Vertical</button>
+      </div>
+      <div class="row"><label for="a4">A4 (Hz)</label><input type="range" id="a4" min="430" max="446" step="1"><output></output></div>
+      <div class="row"><label for="tuner_span">Range (¢)</label><input type="range" id="tuner_span" min="20" max="100" step="5"><output></output></div>
+      <div class="row"><label for="tuner_pos">Position</label><input type="range" id="tuner_pos" min="0" max="0.7" step="0.01"><output></output></div>
+      <div class="row"><label for="tuner_seconds">Trace (s)</label><input type="range" id="tuner_seconds" min="2" max="10" step="0.5"><output></output></div>
+      <p class="hint">Pick <i>Live tuner</i> in the gallery to put the graph on the cello, or the <i>Tuner</i> view to see it alone. The dashed line is the vibrato’s centre.</p>
+    </section>
+
+    <section>
+      <h2>Fit</h2>
+      <div class="seg" id="modeSeg">
+        <button data-v="warp">Warp</button>
+        <button data-v="fill">Fill</button>
+        <button data-v="window">Window</button>
+      </div>
+      <p class="hint" id="modeHint"></p>
+      <div class="seg" id="rotSeg" style="margin-top:10px">
+        <button data-v="follow">Follow tilt</button>
+        <button data-v="upright">Keep upright</button>
+      </div>
+      <div class="seg" id="blendSeg" style="margin-top:10px">
+        <button data-v="normal">Normal</button>
+        <button data-v="multiply">Multiply</button>
+        <button data-v="screen">Screen</button>
+      </div>
+      <div class="row"><label for="opacity">Opacity</label><input type="range" id="opacity" min="0" max="1" step="0.05"><output></output></div>
+      <div class="row"><label for="feather">Feather</label><input type="range" id="feather" min="0" max="40" step="1"><output></output></div>
+      <div class="row"><label for="grow">Grow</label><input type="range" id="grow" min="-20" max="20" step="1"><output></output></div>
+      <label class="check"><input type="checkbox" id="matte"> Black outside the cello (projection matte)</label>
+    </section>
+
+    <section>
+      <h2>Detection</h2>
+      <div class="row"><label for="conf">Confidence</label><input type="range" id="conf" min="0.05" max="0.9" step="0.05"><output></output></div>
+      <div class="row"><label for="smooth">Responsive</label><input type="range" id="smooth" min="0.1" max="1" step="0.05"><output></output></div>
+      <div class="seg" id="instSeg" style="margin-top:10px">
+        <button data-v="largest">Largest cello</button>
+        <button data-v="all">All cellos</button>
+      </div>
+      <label class="check"><input type="checkbox" id="flip"> Mirror camera</label>
+    </section>
+
+    <section>
+      <h2>Source</h2>
+      <select id="source"></select>
+      <div style="margin-top:8px"><button class="btn" id="srcUpload">Upload test image / video…</button></div>
+      <input type="file" id="srcFile" accept="image/*,video/*" hidden>
+    </section>
+  </aside>
+</main>
+
+<script>
+const $ = (s) => document.querySelector(s);
+let state = null;
+let view = localStorageGet('view') || 'output';
+
+function localStorageGet(k) { try { return localStorage.getItem(k); } catch { return null; } }
+function localStorageSet(k, v) { try { localStorage.setItem(k, v); } catch {} }
+
+const SLIDERS = ['opacity', 'feather', 'grow', 'conf', 'smooth', 'a4', 'tuner_span', 'tuner_seconds', 'tuner_pos'];
+
+const MODE_HINTS = {
+  warp: 'Image rides on the cello: rotates with it, top of the image at the scroll.',
+  fill: 'Image fills the cello’s upright bounding box; no rotation.',
+  window: 'Image stays fixed to the frame; the cello is a window onto it.',
+};
+
+// Video feeds: one short request per frame (see /frame in server.py). An
+// <img src=".mjpg"> holds a connection open forever, and browsers allow only
+// 6 per server, so a few open tabs left new ones completely blank.
+function startFeed(img, view) {
+  let seq = -1, url = null;
+  (async function loop() {
+    while (img.isConnected) {
+      try {
+        const r = await fetch(`/frame/${view}.jpg?after=${seq}`, { cache: 'no-store' });
+        seq = +(r.headers.get('X-Seq') || seq);
+        if (r.status === 200) {
+          const next = URL.createObjectURL(await r.blob());
+          img.src = next;
+          if (url) URL.revokeObjectURL(url);
+          url = next;
+        }
+      } catch {
+        await new Promise(res => setTimeout(res, 1000));   // server restarting
+        seq = -1;
+      }
+    }
+    if (url) URL.revokeObjectURL(url);
+  })();
+}
+
+function renderViews() {
+  const v = $('#views');
+  const panes = view === 'split' ? ['output', 'debug'] : [view];
+  v.className = 'views' + (view === 'split' ? ' split' : '');
+  // keep existing <img> elements so streams are not reopened needlessly
+  const want = panes.join(',');
+  if (v.dataset.panes === want) return;
+  v.dataset.panes = want;
+  v.innerHTML = panes.map(p => `<div class="view"><img data-view="${p}" alt="${p} view"><span class="tag">${p === 'debug' ? 'mask' : p}</span></div>`).join('');
+  v.querySelectorAll('img').forEach(img => startFeed(img, img.dataset.view));
+  document.querySelectorAll('#viewSeg button').forEach(b => b.classList.toggle('on', b.dataset.v === view));
+}
+
+async function api(path, opts = {}) {
+  const r = await fetch(path, opts);
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+  return r.json();
+}
+const post = (path, body) => api(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+
+function setSeg(id, value) {
+  document.querySelectorAll(`#${id} button`).forEach(b => b.classList.toggle('on', b.dataset.v === value));
+}
+
+function renderGallery() {
+  const g = $('#gallery');
+  const live = `<div class="tile live ${state.replacement === 'live:tuner' ? 'active' : ''}" data-name="live:tuner" title="Live tuner graph from the microphone" role="button" tabindex="0">
+      <svg viewBox="0 0 40 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M2 12 C6 2, 10 2, 14 12 S22 22, 26 12 S34 2, 38 12"/></svg><span>Live tuner</span></div>`;
+  g.innerHTML = live + state.replacements.map(r => `
+    <div class="tile ${r.name === state.replacement ? 'active' : ''}" data-name="${r.name}" title="${r.name}" role="button" tabindex="0">
+      <img src="/thumbs/${encodeURIComponent(r.name)}.jpg" alt="${r.name}" loading="lazy">
+      ${r.kind === 'video' ? '<span class="vid">▶ video</span>' : ''}
+      ${r.name === state.replacement ? '' : '<button class="del" title="Delete" aria-label="Delete">×</button>'}
+    </div>`).join('') + `<button class="drop" id="dropTile" title="Add image or video" aria-label="Add replacement">+</button>`;
+}
+
+function renderSources() {
+  const sel = $('#source');
+  const cams = [['auto', 'Built-in camera (auto)'], ...state.cameras.map((c, i) => [String(i), `Camera ${i}: ${c}`])];
+  const files = state.sources.map(s => [s.name, `${s.kind === 'video' ? '▶' : '▣'} ${s.name}`]);
+  sel.innerHTML = `<optgroup label="Cameras">${cams.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</optgroup>` +
+                  `<optgroup label="Test files">${files.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</optgroup>`;
+  const match = files.find(([v]) => v === state.source);
+  sel.value = match ? state.source : (state.cameras.findIndex(c => c === state.source) >= 0 ? String(state.cameras.indexOf(state.source)) : 'auto');
+}
+
+function renderControls() {
+  const s = state.settings;
+  setSeg('modeSeg', s.mode); setSeg('blendSeg', s.blend); setSeg('instSeg', s.instances);
+  setSeg('rotSeg', s.rotation);
+  setSeg('layoutSeg', s.tuner_layout);
+  setSeg('mapSeg', s.mapping);
+  $('#rotSeg').style.display = s.mode === 'warp' ? '' : 'none';
+  $('#modeHint').textContent = MODE_HINTS[s.mode];
+  for (const k of SLIDERS) {
+    const el = $('#' + k);
+    if (document.activeElement !== el) el.value = s[k];
+    el.nextElementSibling.textContent = s[k];
+  }
+  $('#matte').checked = s.matte; $('#flip').checked = s.flip;
+}
+
+function renderStats() {
+  $('#fps').textContent = state.fps; $('#segms').textContent = state.seg_ms;
+  $('#inst').textContent = state.instances;
+  $('#dot').className = 'dot ' + (state.instances ? 'on' : 'warn');
+  $('#model').textContent = state.model + (state.open_vocab ? ' (zero-shot)' : '') + ' · ' + state.device;
+  const err = $('#err'); if (state.error) { err.hidden = false; err.textContent = state.error; }
+  renderReadout();
+  renderProjector();
+}
+
+function renderReadout() {
+  const t = state.tuner, r = $('#readout');
+  if (!t) { r.innerHTML = '<span class="sub" style="grid-column:1/-1">Off. Select <i>Live tuner</i> or the <i>Tuner</i> view to start the microphone.</span>'; return; }
+  if (t.error) { r.innerHTML = `<span class="sub off" style="grid-column:1/-1">${t.error}</span>`; return; }
+  const cls = t.cents == null ? '' : Math.abs(t.cents) < 5 ? 'in' : Math.abs(t.cents) < 15 ? 'near' : 'off';
+  const name = t.note ? `${t.note.slice(0, -1)}<small>${t.note.slice(-1)}</small>` : '–';
+  const vib = t.vibrato ? `vibrato <b>${t.vibrato.rate.toFixed(1)} Hz</b> · <b>±${t.vibrato.extent.toFixed(0)}¢</b>` : 'vibrato –';
+  r.innerHTML = `<div class="big">${name}</div>
+    <div class="c ${cls}">${t.cents == null ? '' : (t.cents > 0 ? '+' : '') + t.cents.toFixed(0) + '¢'}</div>
+    <div class="sub">${t.freq ? t.freq.toFixed(1) + ' Hz' : ''} · ${t.level.toFixed(0)} dB</div>
+    <div class="vib">${vib}</div>`;
+}
+
+async function loadMics() {
+  try {
+    const m = await api('/api/mics');
+    $('#mic').innerHTML = `<option value="default">Default microphone</option>` +
+      m.mics.map(d => `<option value="${d.index}">${d.name}${d.default ? ' (default)' : ''}</option>`).join('');
+    $('#mic').value = m.current == null ? 'default' : String(m.current);
+  } catch {}
+}
+$('#mic').addEventListener('change', async e => { await post('/api/mic', { device: e.target.value }); refresh(false); });
+
+async function refresh(full = true) {
+  state = await api('/api/state');
+  renderStats();
+  if (full) { renderGallery(); renderSources(); renderControls(); }
+}
+
+// settings
+async function set(values) {
+  state.settings = await post('/api/settings', values);
+  renderControls();
+}
+for (const [id, key] of [['modeSeg', 'mode'], ['blendSeg', 'blend'], ['instSeg', 'instances'], ['rotSeg', 'rotation'], ['layoutSeg', 'tuner_layout'], ['mapSeg', 'mapping']]) {
+  $('#' + id).addEventListener('click', e => { if (e.target.dataset.v) set({ [key]: e.target.dataset.v }); });
+}
+for (const k of SLIDERS) {
+  $('#' + k).addEventListener('input', e => { e.target.nextElementSibling.textContent = e.target.value; set({ [k]: parseFloat(e.target.value) }); });
+}
+$('#matte').addEventListener('change', e => set({ matte: e.target.checked }));
+$('#flip').addEventListener('change', e => set({ flip: e.target.checked }));
+$('#viewSeg').addEventListener('click', e => { if (e.target.dataset.v) { view = e.target.dataset.v; localStorageSet('view', view); renderViews(); } });
+
+// projector
+const PROJ_HINTS = {
+  content: 'What the audience sees: the replacement on the cello, black elsewhere.',
+  white: 'The cello mask as white light. Check it lands exactly on the cello; fix with Shift / Scale.',
+  outline: 'The detected outline only: easiest to judge alignment at the edges.',
+  grid: 'A test grid filling the whole projector image (ignores calibration).',
+  black: 'Blackout. (B in the projector window does the same.)',
+};
+function renderProjector() {
+  const p = state.projector; if (!p) return;
+  const st = $('#projStatus');
+  st.innerHTML = (p.calibrated ? `<span class="in">Calibrated</span> · ${p.markers} markers · error ${p.error} px`
+                               : '<span class="near">Not calibrated</span>')
+    + ` · ${p.size[0]}×${p.size[1]} · ${p.window ? 'projector window open' : 'no projector window (start with --projector)'}`;
+  const ip = p.iphone || {};
+  $('#lidarStatus').innerHTML = (ip.live ? `<span class="in">iPhone streaming</span> · ${ip.fps} fps`
+                                         : `<span class="near">iPhone not streaming</span>${ip.connections ? ' (connected, no frames)' : ''}`)
+    + ' · ' + (p.procam ? `<span class="in">3D calibrated</span>: ${p.procam}` : '3D not calibrated');
+  const ph = p.phone || {};
+  if (p.procam) {
+    $('#lidarStatus').innerHTML += ' · ' + (!ph.reference ? '<span class="near">recalibrate 3D once to let it follow a bumped phone</span>'
+      : ph.too_far ? `<span class="near">phone moved ${ph.moved_cm} cm / ${ph.moved_deg}°: recalibrate 3D</span>`
+      : ph.tracking ? `phone moved ${ph.moved_cm} cm / ${ph.moved_deg}° (corrected)`
+      : '<span class="near">phone position not confirmed (room view changed?)</span>');
+  }
+  const pl = p.plane;
+  $('#planeStatus').innerHTML = pl
+    ? `<span class="in">Mapping in 3D</span> · cello ${pl.distance.toFixed(2)} m · lean ${pl.lean > 0 ? '+' : ''}${pl.lean}° (top away) · turn ${pl.turn > 0 ? '+' : ''}${pl.turn}° (right away) · ${pl.points} depth points, ±${pl.residual_mm} mm`
+    : (state.settings && state.settings.mapping === '3d'
+        ? '<span class="near">3D unavailable</span>: needs the iPhone source, a 3D calibration and the cello in view; using the flat mapping'
+        : 'Flat mapping (fixed plane from the stripe calibration)');
+  setSeg('projModeSeg', p.mode);
+  $('#projModeHint').textContent = PROJ_HINTS[p.mode] || '';
+  for (const [id, k] of [['pdx', 'dx'], ['pdy', 'dy'], ['pscale', 'scale']]) {
+    const el = $('#' + id);
+    if (document.activeElement !== el) el.value = p[k];
+    el.nextElementSibling.textContent = (+p[k]).toFixed(k === 'scale' ? 3 : 0);
+    el.disabled = !p.calibrated;
+  }
+}
+$('#projModeSeg').addEventListener('click', async e => {
+  if (!e.target.dataset.v) return;
+  state.projector = await post('/api/projector', { mode: e.target.dataset.v }); renderProjector();
+});
+for (const [id, k] of [['pdx', 'dx'], ['pdy', 'dy'], ['pscale', 'scale']]) {
+  $('#' + id).addEventListener('input', async e => {
+    e.target.nextElementSibling.textContent = e.target.value;
+    state.projector = await post('/api/projector', { [k]: parseFloat(e.target.value) });
+  });
+}
+async function calibrate(method) {
+  const b = method === 'lidar' ? $('#calibrate3d') : $('#calibrate'); b.disabled = true;
+  const label = b.textContent;
+  const tick = setInterval(async () => {
+    try { const p = await api('/api/projector'); if (p.calibrating) b.textContent = 'Calibrating: ' + p.calibrating; } catch {}
+  }, 400);
+  b.textContent = 'Calibrating…';
+  try {
+    const r = await post('/api/projector/calibrate', { method });
+    $('#err').hidden = false; $('#err').textContent = r.message;
+    const v = $('#calibView'); v.hidden = false; v.src = '/api/projector/view.jpg?' + Date.now();
+  } catch (err) { $('#err').hidden = false; $('#err').textContent = err.message; }
+  clearInterval(tick);
+  b.disabled = false; b.textContent = label;
+  refresh();
+}
+$('#calibrate').addEventListener('click', () => calibrate('structured'));
+$('#calibrate3d').addEventListener('click', () => calibrate('lidar'));
+$('#calibMarkers').addEventListener('click', e => { e.preventDefault(); calibrate('markers'); });
+
+// replacement gallery
+$('#gallery').addEventListener('click', async e => {
+  if (e.target.id === 'dropTile') return $('#replFile').click();
+  const tile = e.target.closest('.tile'); if (!tile) return;
+  if (e.target.classList.contains('del')) {
+    await api('/api/replacements/' + encodeURIComponent(tile.dataset.name), { method: 'DELETE' });
+  } else {
+    await post('/api/replacement', { name: tile.dataset.name });
+  }
+  refresh();
+});
+async function upload(path, file) {
+  const fd = new FormData(); fd.append('file', file);
+  try { await api(path, { method: 'POST', body: fd }); }
+  catch (err) { $('#err').hidden = false; $('#err').textContent = err.message; }
+  refresh();
+}
+$('#replFile').addEventListener('change', e => { if (e.target.files[0]) upload('/api/replacements', e.target.files[0]); e.target.value = ''; });
+const aside = document.querySelector('aside section');
+aside.addEventListener('dragover', e => { e.preventDefault(); $('#dropTile')?.classList.add('over'); });
+aside.addEventListener('dragleave', () => $('#dropTile')?.classList.remove('over'));
+aside.addEventListener('drop', e => { e.preventDefault(); $('#dropTile')?.classList.remove('over'); if (e.dataTransfer.files[0]) upload('/api/replacements', e.dataTransfer.files[0]); });
+
+// source
+$('#source').addEventListener('change', async e => {
+  try { await post('/api/source', { spec: e.target.value }); }
+  catch (err) { $('#err').hidden = false; $('#err').textContent = err.message; }
+  refresh();
+});
+$('#srcUpload').addEventListener('click', () => $('#srcFile').click());
+$('#srcFile').addEventListener('change', e => { if (e.target.files[0]) upload('/api/sources', e.target.files[0]); e.target.value = ''; });
+
+renderViews();
+refresh();
+loadMics();
+// the tuner readout needs a faster refresh than the rest of the state
+setInterval(async () => {
+  if (!state || !state.tuner) return;
+  try { state.tuner = await api('/api/tuner'); renderReadout(); } catch {}
+}, 125);
+setInterval(() => refresh(false).catch(() => {}), 1000);
+</script>
+</body>
+</html>

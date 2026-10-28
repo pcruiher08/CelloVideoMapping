@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cello Output</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; cursor: none; }
+  img { width: 100vw; height: 100vh; object-fit: contain; display: block; }
+</style>
+</head>
+<body>
+<img id="feed" alt="">
+<script>
+  // /output?view=tuner: the tuner graph alone; ?view=projector: the projector image
+  // (a browser fallback for the native window: drag it to the projector, click for fullscreen)
+// Video feeds: one short request per frame (see /frame in server.py). An
+  // <img src=".mjpg"> holds a connection open forever, and browsers allow only
+  // 6 per server, so a few open tabs left new ones completely blank.
+  function startFeed(img, view) {
+    let seq = -1, url = null;
+    (async function loop() {
+      while (img.isConnected) {
+        try {
+          const r = await fetch(`/frame/${view}.jpg?after=${seq}`, { cache: 'no-store' });
+          seq = +(r.headers.get('X-Seq') || seq);
+          if (r.status === 200) {
+            const next = URL.createObjectURL(await r.blob());
+            img.src = next;
+            if (url) URL.revokeObjectURL(url);
+            url = next;
+          }
+        } catch {
+          await new Promise(res => setTimeout(res, 1000));   // server restarting
+          seq = -1;
+        }
+      }
+      if (url) URL.revokeObjectURL(url);
+    })();
+  }
+  const v = new URLSearchParams(location.search).get('view');
+  startFeed(document.getElementById('feed'), ['tuner', 'projector'].includes(v) ? v : 'output');
+  // click anywhere to go fullscreen (browsers require a gesture)
+  document.body.addEventListener('click', () => {
+    if (!document.fullscreenElement) document.documentElement.requestFullscreen();
+    else document.exitFullscreen();
+  });
+</script>
+</body>
+</html>
