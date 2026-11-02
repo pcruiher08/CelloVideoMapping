@@ -149,9 +149,9 @@ class KinectSource:
         except OSError:
             pass
         try:
-            p.wait(timeout=3)
+            p.wait(timeout=4)
         except subprocess.TimeoutExpired:
-            p.kill()
+            p.kill()                       # the helper gives up after 2 s itself
 
     def _send(self, line):
         p = self.proc

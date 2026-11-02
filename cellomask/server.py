@@ -24,6 +24,7 @@ import numpy as np
 from .cello3d import CelloPlane, front_face
 from .predict import PlanePredictor, PosePredictor, apply_axis, apply_mask
 from .shape import LearnedShape, ShapeMemory, close_across
+from .model3d import CelloModel, depth_refine
 from .live import LiveMedia, OscOut, ndi_sources, open_live, syphon_sources
 from .composite import composite, debug_overlay, mask_roi, shape_alpha
 from .iphone import IPHONE, depth_view
@@ -66,6 +67,7 @@ DEFAULTS = {
     "surface": "front",      # front (the body's top only, from depth) | whole (the full mask)
     "inset_mm": 6.0,         # front: edge pulled in so no light reaches the ribs
     "hands": "paint",        # a hand / arm over the cello: paint (the whole cello shape) | dark (cut out)
+    "depth_shape": "scan",   # scan (the learned 3D scan, fitted; flood fill when it is lost) | fill | off
     "osc_host": "",          # TouchDesigner's address for the cello's state over OSC ("" = off)
     "osc_port": 9000,
     "predict_ms": 250,       # draw the cello this far ahead of its capture (0 = off); the light lags ~350 ms
@@ -267,19 +269,110 @@ def open_camera(spec, width, height):
     return FrameGrabber(cap), name or f"camera {idx}"
 
 
+def cloud_points(pkt, mask, plane, step=1, model=None):
+    """Depth packet -> bytes for /cloud: uint32 JSON length, JSON (count,
+    plane), then per point float32 x, y, z (metres, camera frame: x right,
+    y down, z ahead) and uint8 b, g, r, flag (1 = on the cello mask)."""
+    if pkt is None:
+        return None
+    depth, K, bgr = pkt["depth"][::step, ::step], pkt["K"], pkt["bgr"]
+    h, w = bgr.shape[:2]
+    dh, dw = pkt["depth"].shape
+    ys, xs = np.nonzero(np.isfinite(depth) & (depth > 0.1))
+    xs, ys = xs * step, ys * step
+    u = (xs + 0.5) * w / dw - 0.5
+    v = (ys + 0.5) * h / dh - 0.5
+    z = pkt["depth"][ys, xs].astype(np.float32)
+    P = np.stack([(u - K[0, 2]) * z / K[0, 0], (v - K[1, 2]) * z / K[1, 1], z], 1).astype(np.float32)
+    ui, vi = np.clip(np.round(u).astype(int), 0, w - 1), np.clip(np.round(v).astype(int), 0, h - 1)
+    col = np.zeros((len(z), 4), np.uint8)
+    col[:, :3] = bgr[vi, ui]
+    if mask is not None:
+        mh, mw = mask.shape
+        col[:, 3] = mask[np.clip(vi * mh // h, 0, mh - 1), np.clip(ui * mw // w, 0, mw - 1)] > 0.5
+    hd = {"count": int(len(z)), "plane": None, "cello": int(col[:, 3].sum()), "scan": None}
+    if model is not None and model.ok:
+        S = model.S[::3] @ model.M[:3, :3].T + model.M[:3, 3]
+        O = model.O @ model.M[:3, :3].T + model.M[:3, 3]
+        hd["scan"] = {"points": np.round(S, 4).tolist(), "outline": np.round(O, 4).tolist()}
+    if plane is not None and plane.n is not None:
+        hd["plane"] = {"C": plane.C.tolist(), "n": plane.n.tolist(), "source": "tracked"}
+    elif hd["cello"] >= 60:
+        # no 3D calibration yet (the app only tracks the plane then): fit it
+        # here, on this frame's cello points, to show it anyway
+        fit = CelloPlane.fit(P[col[:, 3] > 0].astype(np.float64))
+        if fit is not None:
+            C, n, res, kept = fit
+            hd["plane"] = {"C": C.tolist(), "n": n.tolist(), "source": "this frame",
+                           "residual_mm": round(1000 * float(res), 1)}
+    j = json.dumps(hd).encode()
+    rec = np.empty(len(z), [("p", np.float32, 3), ("c", np.uint8, 4)])
+    rec["p"], rec["c"] = P, col
+    return len(j).to_bytes(4, "little") + j + rec.tobytes()
+
+
+def cello_candidates(inst, overlap=0.3):
+    """The detections as candidate cellos, largest first, each merged with
+    the smaller ones that overlap it. The model often returns the same cello
+    twice, once whole and once as just the body; taking only the larger one
+    sometimes kept the body alone, whose shape says little about which way
+    the cello leans."""
+    out, used = [], set()
+    for i, d in enumerate(inst):
+        if i in used:
+            continue
+        keep, merged = d["mask"] > 0.5, d["mask"]
+        for j in range(i + 1, len(inst)):
+            m = inst[j]["mask"] > 0.5
+            if j not in used and (m & keep).sum() > overlap * max(1, m.sum()):
+                merged = np.maximum(merged, inst[j]["mask"])
+                used.add(j)
+        out.append(merged)
+    return out
+
+
 def largest_cello(inst, overlap=0.3):
-    """The largest detection merged with the others that overlap it.
-    The model often returns the same cello twice, once whole and once as
-    just the body; taking only the larger one sometimes kept the body alone,
-    whose shape says little about which way the cello leans."""
-    base = inst[0]["mask"]
-    keep = base > 0.5
-    merged = base
-    for d in inst[1:]:
-        m = d["mask"] > 0.5
-        if (m & keep).sum() > overlap * max(1, m.sum()):
-            merged = np.maximum(merged, d["mask"])
-    return merged
+    """The largest detection merged with the others that overlap it."""
+    return cello_candidates(inst, overlap)[0]
+
+
+def iou(a, b):
+    a, b = a > 0.5, b > 0.5
+    return float((a & b).sum()) / max(1, int((a | b).sum()))
+
+
+# a full-size cello's front, scroll to endpin and across the lower bout (m)
+CELLO_SIZE = (1.2, 0.44)
+
+
+def physical_size(mask, pkt, K):
+    """(length, width) in metres of what `mask` covers, from the depth: the
+    spread of its 3D points along and across their main direction. None
+    without enough depth on it."""
+    depth = pkt["depth"]
+    dh, dw = depth.shape
+    h, w = mask.shape
+    md = cv2.resize((mask > 0.5).astype(np.uint8) * 255, (dw, dh), interpolation=cv2.INTER_AREA) > 127
+    ok = md & np.isfinite(depth) & (depth > 0.1)
+    if ok.sum() < 80:
+        return None
+    zc = float(np.median(depth[ok]))
+    ok &= np.abs(depth - zc) < 0.3                  # its own surface, not wall seen past its edge
+    ys, xs = np.nonzero(ok)
+    if len(xs) < 80:
+        return None
+    z = depth[ys, xs].astype(np.float64)
+    u, v = (xs + 0.5) * w / dw - 0.5, (ys + 0.5) * h / dh - 0.5
+    P = np.c_[(u - K[0, 2]) * z / K[0, 0], (v - K[1, 2]) * z / K[1, 1], z]
+    Q = P - P.mean(0)
+    ax = np.linalg.eigh(Q.T @ Q)[1][:, ::-1]        # main direction first
+    ext = [float(np.subtract(*np.percentile(Q @ ax[:, i], [98, 2]))) for i in range(2)]
+    return ext[0], ext[1]
+
+
+def size_error(size, ref):
+    """How far a measured (length, width) is from the cello's, relative."""
+    return max(abs(size[0] - ref[0]) / ref[0], abs(size[1] - ref[1]) / ref[1])
 
 
 class FrameGrabber:
@@ -352,6 +445,8 @@ class Pipeline(threading.Thread):
         self.shape = ShapeMemory()     # the whole outline while a hand covers part of it
         # the cello's outline learned alone (Calibrate 3D / Learn), fitted each frame
         self.learned = LearnedShape(os.path.join(ROOT, "data", "cello_shape.npz"))
+        self.model = CelloModel()      # the cello scanned in 3D (Calibrate 3D / Learn), fitted each frame
+        self.cello_prev = None         # the detection picked as the cello last frame
         self.seen = None               # the cello as segmented this frame (for learning)
         self.covered = 0.0             # fraction of the cello covered (hand, arm, bow)
         self.screens, self.screen_index = [], None   # displays, and the projector window's
@@ -603,9 +698,26 @@ class Pipeline(threading.Thread):
         self.n_instances = len(inst)
         raw = None
         if inst:
-            raw = largest_cello(inst) if s["instances"] == "largest" else \
+            raw = self.pick_cello(inst, pkt, frame.shape, s) if s["instances"] == "largest" else \
                 np.max(np.stack([d["mask"] for d in inst]), 0)
         seen = self.smoother(raw, frame.shape[:2])
+        # depth: the visible cello's edge from the depth, then the 3D scan fitted to it
+        Kf = self.frame_K(pkt, frame.shape)
+        use_depth = seen is not None and Kf is not None and s["depth_shape"] != "off"
+        if use_depth:
+            try:
+                seen = depth_refine(seen, pkt, Kf)
+            except Exception as e:           # never lose the mask over this
+                print(f"depth fill: {e!r}")
+        scanned = None
+        if use_depth and s["depth_shape"] == "scan" and self.model.learned:
+            try:
+                scanned = self.model.track(seen, pkt, Kf)
+            except Exception as e:
+                print(f"3D scan fit: {e!r}")
+                self.model.ok = False
+        else:
+            self.model.ok = False
         if seen is not None and self.axis.last is not None:
             # the fingerboard slot: gaps up to ~30% of the cello's width
             a = self.axis.last
@@ -617,9 +729,9 @@ class Pipeline(threading.Thread):
         if s["hands"] != "paint":
             mask = seen
         else:
-            # the learned outline when it fits: hands, knees and a mask cut
-            # at its detection box cannot change its shape
-            fitted = self.learned(seen) if seen is not None else None
+            # the 3D scan, else the learned outline, when it fits: hands,
+            # knees and a mask cut at its detection box cannot change its shape
+            fitted = scanned if scanned is not None else (self.learned(seen) if seen is not None else None)
             if fitted is not None:
                 mask = fitted
         now = time.time()
@@ -713,6 +825,66 @@ class Pipeline(threading.Thread):
         self.view3d = self._update_3d(frame, mask, axis, pkt, s, now)
         return None if self.view3d is None else self.view3d[1]
 
+    def pick_cello(self, inst, pkt, shape, s):
+        """Which detection is the cello. Not simply the largest: a person
+        close to the camera (a red shirt) also gets detected as a cello, and
+        being nearer it is bigger. In order:
+        - the one overlapping where the cello was (the fitted scan, or the
+          last pick): it is not going to jump across the room in a frame;
+        - starting or lost: the one the 3D scan of this cello fits;
+        - no scan: the one whose real size, from the depth, is a cello's.
+        None when depth shows that none of them is the cello."""
+        cands = cello_candidates(inst)
+        K = self.frame_K(pkt, shape)
+        h, w = shape[:2]
+        prev = None
+        if self.model.ok and K is not None:
+            prev = self.model.render(self.model.M, K, (w, h))
+        if prev is None:
+            prev = self.cello_prev
+        if prev is not None and prev.shape == (h, w):
+            scores = [iou(c, prev) for c in cands]
+            best = int(np.argmax(scores))
+            if scores[best] > 0.3:
+                return self._picked(cands[best])
+        if K is None or s["depth_shape"] == "off":
+            return self._picked(cands[0])            # no depth: the largest, as before
+        if self.model.learned and s["depth_shape"] == "scan":
+            for c in cands[:3]:
+                try:
+                    if self.model.track(depth_refine(c, pkt, K), pkt, K) is not None:
+                        return self._picked(c)
+                except Exception as e:
+                    print(f"3D scan fit: {e!r}")
+        ref = self.model.dimensions() if self.model.learned else CELLO_SIZE
+        errs = []
+        for c in cands:
+            size = physical_size(c, pkt, K)
+            errs.append(9.0 if size is None else size_error(size, ref))
+        best = int(np.argmin(errs))
+        if errs[best] < 0.45:
+            return self._picked(cands[best])
+        if all(e == 9.0 for e in errs):
+            return self._picked(cands[0])            # no depth on any of them: cannot judge
+        self.cello_prev = None
+        return None                                  # none of them is cello-sized
+
+    def _picked(self, m):
+        self.cello_prev = m > 0.5
+        return m
+
+    @staticmethod
+    def frame_K(pkt, shape):
+        """The depth camera's intrinsics for the processed frame (None without depth)."""
+        if pkt is None:
+            return None
+        h, w = shape[:2]
+        K = pkt["K"]
+        if tuple(pkt["size"]) != (w, h):   # the frame was scaled down for processing
+            K = K.copy()
+            K[:2] *= w / pkt["size"][0]
+        return K
+
     def _update_3d(self, frame, mask, axis, pkt, s, now):
         # built whole and published in one assignment by update_3d: other
         # threads (the status API) read view3d at any moment
@@ -726,7 +898,12 @@ class Pipeline(threading.Thread):
         if tuple(pkt["size"]) != (w, h):   # the frame was scaled down for processing
             K = K.copy()
             K[:2] *= w / pkt["size"][0]
-        if self.plane(mask, pkt, now):
+        if self.model.ok:                    # the fitted scan: its plane, from the whole known surface
+            C, n = self.model.plane()
+            self.plane.observe(C, n, now, self.model.stats.get("rms_mm", 0) / 1000, len(self.model.S))
+            self.plane_t = now
+            self.plane_pred.update(*self.plane.raw, self.t_meas)
+        elif self.plane(mask, pkt, now):
             self.plane_t = now
             self.plane_pred.update(*self.plane.raw, self.t_meas)
         if self.plane.n is None or now - self.plane_t > 2.0:
@@ -1099,12 +1276,20 @@ class Pipeline(threading.Thread):
         self.phone.save_ref(d0, K, (ww, hh), before[0]["orientation"])
         self.procam_live = None
         flat = self._apply_stripes(st, region, dbg)
-        # the cello is alone and still for calibrating: learn its outline
+        # the cello is alone and still for calibrating: learn its outline,
+        # and scan it in 3D from the still depth taken before the stripes
         learned = region is not None and self.learned.learn(region.astype(np.float32))
+        scanned = None
+        if region is not None:
+            try:
+                scanned = self.model.learn(before, region.astype(np.float32), K, (ww, hh))
+            except Exception as e:
+                print(f"3D scan: {e!r}")
         return {"ok": True, "markers": sol["n"], "total": 0, "error": round(sol["rms"], 2),
                 "message": f"3D calibration: {self.procam.summary()}. "
                            f"Flat mapping: {flat['message']}"
-                           + (". Cello outline learned" if learned else "")}
+                           + (". Cello outline learned" if learned else "")
+                           + (f"; {scanned}" if scanned else "")}
 
     @staticmethod
     def _decode(pairs, nb):
@@ -1190,6 +1375,8 @@ class Pipeline(threading.Thread):
                 "covered": round(100 * self.covered),
                 "shape": {"learned": self.learned.tpl is not None, "fitted": bool(self.learned.ok),
                           "inliers": round(float(self.learned.inliers), 2)},
+                "scan": {"learned": self.model.learned, "fitted": bool(self.model.ok),
+                         **{k: round(float(v), 2) for k, v in self.model.stats.items()}},
                 "latency": self.latency_state(),
                 "phone": self.phone_state(),
                 "kinect": self.depthcam_state(),
@@ -1426,6 +1613,19 @@ def build_app(pipe):
     def output_page():
         return FileResponse(os.path.join(STATIC, "output.html"))
 
+    @app.get("/cloud")
+    def cloud_page():
+        return FileResponse(os.path.join(STATIC, "cloud.html"))
+
+    @app.get("/api/cloud.bin")
+    def cloud(step: int = 1):
+        """The latest depth frame as a coloured point cloud (see cloud_points)."""
+        from fastapi import Response
+        out = cloud_points(pipe.depth_pkt, pipe.seen, pipe.plane, max(1, min(step, 8)), pipe.model)
+        if out is None:
+            raise HTTPException(409, "no depth frame yet (choose the Kinect or iPhone source)")
+        return Response(out, media_type="application/octet-stream", headers={"Cache-Control": "no-store"})
+
     @app.get("/stream/{view}.mjpg")
     def stream(view: str):
         if view not in pipe.jpeg:
@@ -1578,7 +1778,15 @@ def build_app(pipe):
             raise HTTPException(409, "no cello in view")
         if not pipe.learned.learn(seen):
             raise HTTPException(409, "the cello is too small in the image")
-        return {"ok": True, "message": "cello outline learned"}
+        msg = "cello outline learned"
+        cam = pipe.depth_camera()
+        if cam is not None and cam.live:
+            # and scanned in 3D, from a second of still depth
+            packets = cam.depth_frames(10)
+            K = pipe.frame_K(packets[0], seen.shape) if packets else None
+            scanned = K is not None and pipe.model.learn(packets, seen, K, seen.shape[::-1])
+            msg += f"; {scanned}" if scanned else "; the 3D scan failed (is the cello within ~4 m, in the middle?)"
+        return {"ok": True, "message": msg}
 
     @app.post("/api/debug/record")
     def record(n: int = 90):

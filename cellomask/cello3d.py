@@ -64,6 +64,12 @@ class CelloPlane:
         C, n, res, kept = fit
         if abs(n[0]) > 0.94 or abs(n[1]) > 0.94:
             return False                 # over 70 degrees from facing the camera: not the cello's front
+        self.observe(C, n, t, res, kept)
+        return True
+
+    def observe(self, C, n, t, res=None, kept=0):
+        """A measured plane (from the fit above, or the fitted 3D scan,
+        model3d.py) through the smoothing."""
         self.raw = (C, n)                # unsmoothed, for the motion predictor
         if self.f is None:
             # slow when still (no shimmer), quick when the cello moves. beta

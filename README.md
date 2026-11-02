@@ -287,6 +287,23 @@ SOURCE=lidar ./show.sh          # back to the iPhone
 - `test_kinect.py` checks the frame format offline; `--live` also reads the
   real Kinect for a few seconds.
 
+### The cello's exact shape from depth (`cellomask/model3d.py`)
+
+- **Depth fill:** the segmentation's mask is the seed; the cello's edge comes
+  from the depth (it stops at the jump to the wall), and gaps such as the
+  fingerboard slot fill in.
+- **3D scan:** **Learn cello shape** (and **Calibrate 3D**) scans the cello
+  alone and still. Every frame the scan is fitted to the live depth and
+  the image outline, and the light takes the scan's exact outline at that
+  pose: hands and the bow cannot change it. The depth fill takes over when
+  it does not fit.
+- **Which detection is the cello:** a close person (a red shirt) can also be
+  detected as one. The pick follows the cello from frame to frame, uses the
+  scan to find it again, and without a scan rejects anything not cello-sized
+  in the depth.
+- **/cloud** shows the live point cloud with the fitted scan in cyan.
+  `test_model3d.py` checks all of this on a synthetic cello.
+
 ## Cello replacement (`cellomask/`)
 
 Instance-segments the cello with a fine-tuned **YOLO26-seg** model and puts a

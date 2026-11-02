@@ -186,6 +186,14 @@ int main(int argc, char **argv) {
                   {bgr.size(), depth.size() * 2, hits.size()}))
             break;
     }
+    // libfreenect2's stop can hang on macOS (the USB transfers never finish
+    // cancelling), which left the Kinect running after the app quit: give
+    // it two seconds, then leave anyway (the OS releases the device)
+    std::thread([] {
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+        std::fprintf(stderr, "cellokinect: the Kinect did not stop cleanly; exiting\n");
+        std::_Exit(0);
+    }).detach();
     if (locked) dev->setColorAutoExposure(0);
     dev->stop();
     dev->close();

@@ -125,6 +125,7 @@
       <button class="btn" id="calibrate" style="width:100%">Calibrate (stripes, ~15 s)</button>
       <p class="hint">Put the cello where it will be and keep everything still: the projector flashes black-and-white stripes for about 15 s and the mapping is fitted on the cello itself. No board needed. <a href="#" id="calibMarkers" style="color:var(--muted)">Marker grid instead (needs a flat board)</a></p>
       <p class="sub" id="lidarStatus" style="margin:12px 0 6px">–</p>
+      <p class="sub" style="margin:0 0 6px"><a href="/cloud" target="_blank" style="color:var(--muted)">Open the 3D point cloud ↗</a></p>
       <div class="seg" id="mapSeg" style="margin:6px 0">
         <button data-v="3d">3D (follows lean)</button>
         <button data-v="flat">Flat</button>
@@ -136,6 +137,12 @@
       </div>
       <button class="btn" id="learnShape" style="width:100%;margin:6px 0">Learn cello shape (cello alone, still)</button>
       <p class="sub" id="shapeStatus" style="margin:0 0 6px">–</p>
+      <div class="seg" id="depthShapeSeg" style="margin:6px 0">
+        <button data-v="scan">3D scan + depth fill</button>
+        <button data-v="fill">Depth fill only</button>
+        <button data-v="off">Off</button>
+      </div>
+      <p class="sub" id="scanStatus" style="margin:0 0 6px">–</p>
       <div class="seg" id="handSeg" style="margin:6px 0">
         <button data-v="paint">Paint over hands</button>
         <button data-v="dark">Leave hands dark</button>
@@ -328,6 +335,7 @@ function renderControls() {
   setSeg('mapSeg', s.mapping);
   setSeg('surfSeg', s.surface);
   setSeg('handSeg', s.hands);
+  setSeg('depthShapeSeg', s.depth_shape);
   $('#rotSeg').style.display = s.mode === 'warp' ? '' : 'none';
   $('#modeHint').textContent = MODE_HINTS[s.mode];
   for (const k of SLIDERS) {
@@ -396,7 +404,7 @@ async function set(values) {
   state.settings = await post('/api/settings', values);
   renderControls();
 }
-for (const [id, key] of [['modeSeg', 'mode'], ['blendSeg', 'blend'], ['instSeg', 'instances'], ['rotSeg', 'rotation'], ['layoutSeg', 'tuner_layout'], ['mapSeg', 'mapping'], ['surfSeg', 'surface'], ['handSeg', 'hands']]) {
+for (const [id, key] of [['modeSeg', 'mode'], ['blendSeg', 'blend'], ['instSeg', 'instances'], ['rotSeg', 'rotation'], ['layoutSeg', 'tuner_layout'], ['mapSeg', 'mapping'], ['surfSeg', 'surface'], ['handSeg', 'hands'], ['depthShapeSeg', 'depth_shape']]) {
   $('#' + id).addEventListener('click', e => { if (e.target.dataset.v) set({ [key]: e.target.dataset.v }); });
 }
 for (const k of SLIDERS) {
@@ -447,6 +455,11 @@ function renderProjector() {
     ? '<span class="near">Outline not learned</span>: with the cello alone and still, press Learn (Calibrate 3D also learns it)'
     : sh.fitted ? `<span class="in">Learned outline fitted</span> (${Math.round(100 * sh.inliers)}% of the visible edge on it)`
     : '<span class="near">Learned outline not fitting</span>: using the live mask (cello moved far, or relearn)';
+  const sc = p.scan;
+  if (sc) $('#scanStatus').innerHTML = !sc.learned
+    ? '<span class="near">No 3D scan</span>: Calibrate 3D or Learn (cello alone, still) scans it; the depth fill works meanwhile'
+    : sc.fitted ? `<span class="in">3D scan fitted</span> · surface ±${sc.rms_mm} mm · edge ${sc.edge_px} px · ${Math.round(100 * sc.in3d)}% of it seen`
+    : '<span class="near">3D scan not fitting</span>: using the depth fill (cello out of view, or rescan)';
   const pl = p.plane;
   $('#planeStatus').innerHTML = pl
     ? `<span class="in">Mapping in 3D</span> · cello ${pl.distance.toFixed(2)} m · lean ${pl.lean > 0 ? '+' : ''}${pl.lean}° (top away) · turn ${pl.turn > 0 ? '+' : ''}${pl.turn}° (right away) · ${pl.points} depth points, ±${pl.residual_mm} mm${p.covered ? ` · ${p.covered}% covered (hand / bow)` : ''}`

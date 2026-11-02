@@ -100,13 +100,26 @@ class LiveMedia:
 
 _finder = None
 _finder_lock = threading.Lock()
+_import_lock = threading.Lock()
+
+
+def _cyndilib():
+    """Import cyndilib's modules once, under a lock: the source scan and a
+    restored NDI image start together, and two threads importing it at the
+    same time left one with a half-initialised module (circular import error)."""
+    with _import_lock:
+        import cyndilib.finder
+        import cyndilib.receiver
+        import cyndilib.video_frame
+        import cyndilib.wrapper.ndi_recv
+    return cyndilib
 
 
 def ndi_sources(wait=0.0):
     """Names of the NDI sources on the network ("HOST (stream)")."""
     global _finder
     try:
-        from cyndilib.finder import Finder
+        Finder = _cyndilib().finder.Finder
     except ImportError:
         return []
     with _finder_lock:
@@ -125,9 +138,9 @@ class NDIMedia(LiveMedia):
         super().__init__(NDI_PREFIX + source, f"NDI {source}")
 
     def _run(self):
-        from cyndilib.receiver import Receiver
-        from cyndilib.video_frame import VideoFrameSync
-        from cyndilib.wrapper.ndi_recv import RecvBandwidth, RecvColorFormat
+        nd = _cyndilib()
+        Receiver, VideoFrameSync = nd.receiver.Receiver, nd.video_frame.VideoFrameSync
+        RecvBandwidth, RecvColorFormat = nd.wrapper.ndi_recv.RecvBandwidth, nd.wrapper.ndi_recv.RecvColorFormat
 
         ndi_sources()
         src = None
