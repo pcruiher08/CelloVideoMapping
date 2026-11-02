@@ -336,6 +336,13 @@ def largest_cello(inst, overlap=0.3):
     return cello_candidates(inst, overlap)[0]
 
 
+def same_view(a, b):
+    """Two image sizes of the same camera view: equal, or one scaled (the
+    3D calibration and the scan are in metres, so tracking can run at a
+    lower resolution than they were made at; turning the phone cannot)."""
+    return abs(a[0] / a[1] - b[0] / b[1]) < 0.01
+
+
 def iou(a, b):
     a, b = a > 0.5, b > 0.5
     return float((a & b).sum()) / max(1, int((a | b).sum()))
@@ -447,6 +454,7 @@ class Pipeline(threading.Thread):
         self.learned = LearnedShape(os.path.join(ROOT, "data", "cello_shape.npz"))
         self.model = CelloModel()      # the cello scanned in 3D (Calibrate 3D / Learn), fitted each frame
         self.cello_prev = None         # the detection picked as the cello last frame
+        self.steps = {}                # ms per step of render (smoothed)
         self.seen = None               # the cello as segmented this frame (for learning)
         self.covered = 0.0             # fraction of the cello covered (hand, arm, bow)
         self.screens, self.screen_index = [], None   # displays, and the projector window's
@@ -684,8 +692,22 @@ class Pipeline(threading.Thread):
                 print(f"render: {e!r}")
                 time.sleep(0.05)
 
+    def _ticker(self):
+        """tick(name): the time since the last tick, smoothed into
+        self.steps (ms per step of render; shown in the status)."""
+        last = [time.perf_counter()]
+
+        def tick(name):
+            t = time.perf_counter()
+            ms = 1000 * (t - last[0])
+            last[0] = t
+            old = self.steps.get(name)
+            self.steps[name] = ms if old is None else 0.9 * old + 0.1 * ms
+        return tick
+
     def render(self, frame, inst, s, pkt):
         """One segmented frame through to the projector and the views."""
+        tick = self._ticker()
         self.depth_pkt = pkt
         with self.lock:
             repl_media = self.replacement
@@ -700,7 +722,9 @@ class Pipeline(threading.Thread):
         if inst:
             raw = self.pick_cello(inst, pkt, frame.shape, s) if s["instances"] == "largest" else \
                 np.max(np.stack([d["mask"] for d in inst]), 0)
+        tick("replacement")
         seen = self.smoother(raw, frame.shape[:2])
+        tick("pick + smooth")
         # depth: the visible cello's edge from the depth, then the 3D scan fitted to it
         Kf = self.frame_K(pkt, frame.shape)
         use_depth = seen is not None and Kf is not None and s["depth_shape"] != "off"
@@ -709,6 +733,7 @@ class Pipeline(threading.Thread):
                 seen = depth_refine(seen, pkt, Kf)
             except Exception as e:           # never lose the mask over this
                 print(f"depth fill: {e!r}")
+        tick("depth fill")
         scanned = None
         if use_depth and s["depth_shape"] == "scan" and self.model.learned:
             try:
@@ -718,6 +743,7 @@ class Pipeline(threading.Thread):
                 self.model.ok = False
         else:
             self.model.ok = False
+        tick("scan fit")
         if seen is not None and self.axis.last is not None:
             # the fingerboard slot: gaps up to ~30% of the cello's width
             a = self.axis.last
@@ -725,7 +751,14 @@ class Pipeline(threading.Thread):
         # the whole cello, also where a hand or the bow is in front of it;
         # "dark" keeps only what is seen (the hand then cuts a hole)
         self.seen = seen
-        mask, self.covered = (self.shape(seen) if seen is not None else (None, 0.0))
+        if scanned is not None and s["hands"] == "paint":
+            # the scan is the whole cello: what of it is not seen is covered
+            # (and the 2D shape memory, ~5 ms, is not needed for the shape)
+            whole = scanned > 0.5
+            mask = scanned
+            self.covered = 1.0 - float((whole & (seen > 0.5)).sum()) / max(1, int(whole.sum()))
+        else:
+            mask, self.covered = (self.shape(seen) if seen is not None else (None, 0.0))
         if s["hands"] != "paint":
             mask = seen
         else:
@@ -734,11 +767,13 @@ class Pipeline(threading.Thread):
             fitted = scanned if scanned is not None else (self.learned(seen) if seen is not None else None)
             if fitted is not None:
                 mask = fitted
+        tick("outline")
         now = time.time()
         # filters run on capture time: frames arrive unevenly over Wi-Fi
         self.t_meas = (pkt.get("t_cap_mac") if pkt is not None else None) or now
         axis = self.axis(mask, now) if mask is not None else None
         quad = self.update_3d(frame, seen, axis, pkt, s, now)    # the plane from the cello's own depth
+        tick("axis + 3D")
         if self.osc.client is not None:
             self.osc.send(self, frame.shape, axis,
                           self.tuner.snapshot() if self.tuner is not None and self.tuner.running else None)
@@ -746,11 +781,13 @@ class Pipeline(threading.Thread):
             self.pose_pred.reset()
         # what gets light: the front face when depth allows, else the mask
         face = self.front_mask(mask, pkt, s)
+        tick("front face")
         if face is not None:
             face = self.face_smoother(face, frame.shape[:2])
         else:
             self.face_smoother.reset()
         self.face = face
+        tick("face smooth")
         rec = self.recording
         if rec is not None and len(rec["frames"]) < rec["n"]:
             q = lambda a: None if a is None else (a[::2, ::2] > 0.5)
@@ -761,9 +798,12 @@ class Pipeline(threading.Thread):
             rec["proj_next"] = True
         self.raw_frame = frame
         self.raw_seq += 1
+        tick("record")
         if self.projector_window or self.watched("projector"):
             try:
-                pf = self.render_projector(frame, *self.ahead(face, axis, quad, s), repl, s)
+                ahead = self.ahead(face, axis, quad, s)
+                tick("predict")
+                pf = self.render_projector(frame, *ahead, repl, s)
             except Exception as e:       # never let the projector stop the loop
                 print(f"projector: {e!r}")
                 pf = np.zeros((self.proj_size[1], self.proj_size[0], 3), np.uint8)
@@ -781,6 +821,7 @@ class Pipeline(threading.Thread):
                 if len(self.proj_meta) > 64:
                     self.proj_meta.pop(next(iter(self.proj_meta)))
 
+        tick("projector image")
         # the output view is only composited and encoded while someone
         # watches it (projecting does not need it)
         jo = None
@@ -792,6 +833,7 @@ class Pipeline(threading.Thread):
             jo = cv2.imencode(".jpg", out, [cv2.IMWRITE_JPEG_QUALITY, 85])[1].tobytes()
         # the mask view is only drawn and encoded while someone watches it
         dbg = debug_overlay(frame, inst, mask, axis) if self.watched("debug") else None
+        tick("output view")
 
         dt = now - self.t_prev
         self.t_prev = now
@@ -813,6 +855,7 @@ class Pipeline(threading.Thread):
             self.jpeg = {"output": jo, "debug": jd, "tuner": jt, "projector": jp, "depth": jz}
             self.seq += 1
             self.cond.notify_all()
+        tick("page views")
 
     # --- projection mapping --------------------------------------------------
 
@@ -892,8 +935,8 @@ class Pipeline(threading.Thread):
         if s["mapping"] != "3d" or pkt is None or pc is None or mask is None:
             return None
         h, w = frame.shape[:2]
-        if pc.cam_size is not None and tuple(pc.cam_size) != (w, h):
-            return None                  # calibrated in another orientation / size
+        if pc.cam_size is not None and not same_view(pc.cam_size, (w, h)):
+            return None                  # calibrated in another orientation (a resolution change is fine: 3D is in metres)
         K = pkt["K"]
         if tuple(pkt["size"]) != (w, h):   # the frame was scaled down for processing
             K = K.copy()
@@ -1378,6 +1421,7 @@ class Pipeline(threading.Thread):
                 "scan": {"learned": self.model.learned, "fitted": bool(self.model.ok),
                          **{k: round(float(v), 2) for k, v in self.model.stats.items()}},
                 "latency": self.latency_state(),
+                "steps_ms": {k: round(v, 1) for k, v in self.steps.items()},
                 "phone": self.phone_state(),
                 "kinect": self.depthcam_state(),
                 "iphone": {"live": IPHONE.live, "fps": round(IPHONE.fps, 1),

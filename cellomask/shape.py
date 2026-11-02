@@ -290,9 +290,18 @@ class LearnedShape:
     def __call__(self, mask):
         """The learned outline placed on this frame (full size, float), or
         None when there is none or it does not fit (then use the mask)."""
-        if self.tpl is None or mask is None or tuple(mask.shape) != tuple(self.size):
+        if self.tpl is None or mask is None:
             self.ok = False
             return None
+        h, w = mask.shape
+        H, W = self.size
+        if (h, w) != (H, W):
+            # the same view processed at another resolution: fit at the learned one
+            if abs(w / h - W / H) > 0.01:
+                self.ok = False
+                return None
+            out = self(cv2.resize(mask.astype(np.float32), (W, H), interpolation=cv2.INTER_LINEAR))
+            return None if out is None else cv2.resize(out, (w, h), interpolation=cv2.INTER_LINEAR)
         k = self.scale
         m = fill_holes(mask[::k, ::k] > 0.5)
         if m.sum() < 100:

@@ -258,7 +258,7 @@ class CelloModel:
             self.ok = False
             return None
         h, w = visible.shape
-        if (w, h) != tuple(self.size):
+        if abs(w / h - self.size[0] / self.size[1]) > 0.01:   # another orientation; a scaled view is fine
             self.ok = False
             return None
         depth, conf = pkt["depth"], pkt.get("conf")
@@ -300,7 +300,7 @@ class CelloModel:
 
         if self.ok:
             M = self.M
-            iters, g3s, g2s = 12, (0.04, 0.015, 0.008), (25.0, 10.0, 5.0)
+            iters, g3s, g2s = 6, (0.02, 0.008), (12.0, 5.0)    # from last frame's pose: close already
         else:
             # from scratch: the scan as learned, moved onto the visible cello
             cl = P[np.isfinite(P).all(-1) & vd].mean(0) if (vd & region).sum() > 50 else None

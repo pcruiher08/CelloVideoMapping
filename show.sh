@@ -23,4 +23,6 @@ fi
 echo "Web page: http://${IP:-localhost}:${PORT:-8000}"
 echo "Projector window: f cover / uncover the screen, b blackout, q quits (connect the projector and"
 echo "set it to extend BEFORE starting, or the window opens on this screen)"
-exec bash ./run.sh --source "$SOURCE" --projector --host 0.0.0.0 "$@"
+# tracked at 960x540: the 3D calibration and scan are in metres, so they
+# hold at any resolution, and every mask step costs ~half of 1280x720
+exec bash ./run.sh --source "$SOURCE" --projector --host 0.0.0.0 --width 960 --height 540 "$@"

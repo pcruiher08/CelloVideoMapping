@@ -116,10 +116,14 @@ class Calibration:
                          [0, self.scale, cy - self.scale * cy + self.dy],
                          [0, 0, 1]], np.float64)
 
-    def matrix(self):
+    def matrix(self, size=None):
         """H followed by the nudge. The nudge absorbs the cello not lying on
-        the board's plane."""
-        return self.nudge() @ self.H
+        the board's plane. `size`: the camera image's (w, h), when it is
+        processed at another resolution than calibrated (same view, scaled)."""
+        H = self.H
+        if size is not None and self.cam_size is not None and tuple(size) != self.cam_size:
+            H = H @ np.diag([self.cam_size[0] / size[0], self.cam_size[1] / size[1], 1.0])
+        return self.nudge() @ H
 
     def warp(self, cam_img, roi=None):
         """Camera-space image -> projector frame. With `roi` (x0, y0, x1, y1:
@@ -127,7 +131,7 @@ class Calibration:
         into the projector-space box it lands on; the rest stays black.
         Warping the whole 1920x1080 frame cost 11 ms per frame."""
         w, h = self.proj_size
-        M = self.matrix()
+        M = self.matrix((cam_img.shape[1], cam_img.shape[0]))
         if roi is None:
             return cv2.warpPerspective(cam_img, M, (w, h), flags=cv2.INTER_LINEAR,
                                        borderValue=(0, 0, 0))

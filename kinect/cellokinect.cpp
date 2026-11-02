@@ -36,6 +36,7 @@
 static const int BLOCK = 4;
 static std::atomic<bool> running(true);
 static std::atomic<int> lock_request(-1);          // -1 none, 0 unlock, 1 lock
+static std::atomic<double> last_frame(0.0);        // when a frame last went out
 
 static double now_s() {
     using namespace std::chrono;
@@ -117,6 +118,19 @@ int main(int argc, char **argv) {
     // the app gone means stop, even if something else keeps our pipes open
     // (a process it started inheriting them): a helper outlived its app for
     // half an hour with the Kinect still on
+    // no frames for 3 s: the USB link failed (LIBUSB_ERROR_OTHER after the
+    // Kinect was moved left it silent, and the light froze on the cello).
+    // Exit, and the app starts a fresh helper, which reopens the Kinect
+    last_frame = now_s();
+    std::thread([] {
+        while (running) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            if (now_s() - last_frame > 3.0) {
+                std::fprintf(stderr, "cellokinect: no frames for 3 s (USB link?); restarting\n");
+                std::_Exit(5);
+            }
+        }
+    }).detach();
     pid_t parent = getppid();
     std::thread([parent] {
         while (running) {
@@ -198,6 +212,7 @@ int main(int argc, char **argv) {
         if (!send("KV2F", fj, {bgr.data(), depth.data(), hits.data()},
                   {bgr.size(), depth.size() * 2, hits.size()}))
             break;
+        last_frame = now_s();
     }
     // libfreenect2's stop can hang on macOS (the USB transfers never finish
     // cancelling), which left the Kinect running after the app quit: give
