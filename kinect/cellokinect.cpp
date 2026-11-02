@@ -114,6 +114,19 @@ int main(int argc, char **argv) {
     if (!send("KV2H", hd, {}, {})) return 0;
 
     std::thread(read_commands).detach();
+    // the app gone means stop, even if something else keeps our pipes open
+    // (a process it started inheriting them): a helper outlived its app for
+    // half an hour with the Kinect still on
+    pid_t parent = getppid();
+    std::thread([parent] {
+        while (running) {
+            if (getppid() != parent) {
+                std::fprintf(stderr, "cellokinect: the app is gone; exiting\n");
+                std::_Exit(0);
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        }
+    }).detach();
     std::vector<uint8_t> bgr(size_t(W) * H * 3);
     std::vector<uint16_t> depth(size_t(DW) * DH);
     std::vector<uint8_t> hits(size_t(DW) * DH);

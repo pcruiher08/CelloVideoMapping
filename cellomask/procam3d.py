@@ -142,9 +142,22 @@ def solve_projector(X, p, proj_size, rounds=3):
     if len(X) < 500:
         return None
     rng = np.random.default_rng(0)
+    # the DLT start, robustly: a few hundred stray points (flying depth at
+    # a chair's edge, 1-2 m off) dragged a plain DLT so far that the
+    # refinement settled on a projector with its lens centre at the image's
+    # edge (17 px rms on data a clean start fits to 3 px)
     keep = np.ones(len(X), bool)
-    sub = rng.choice(len(X), min(len(X), 6000), replace=False)
-    P = dlt(X[sub], p[sub])
+    for _ in range(6):
+        idx = np.flatnonzero(keep)
+        sub = rng.choice(idx, min(len(idx), 6000), replace=False)
+        P = dlt(X[sub], p[sub])
+        q = np.c_[X, np.ones(len(X))] @ P.T
+        with np.errstate(divide="ignore", invalid="ignore"):
+            err = np.linalg.norm(q[:, :2] / q[:, 2:3] - p, axis=1)
+        err = np.nan_to_num(err, nan=1e9)
+        keep = err < max(3.0, 3 * np.median(err[keep]))
+        if keep.sum() < 500:
+            return None
     if np.linalg.det(P[:, :3]) < 0:
         P = -P
     K0, Rm, C = cv2.decomposeProjectionMatrix(P)[:3]
@@ -224,7 +237,7 @@ class Procam3D:
     def summary(self):
         x, y, z = self.position
         return (f"projector focal {self.K[0, 0]:.0f} px, lens centre ({self.K[0, 2]:.0f}, {self.K[1, 2]:.0f}), "
-                f"{100 * np.hypot(x, y):.0f} cm beside / {100 * z:+.0f} cm in depth from the iPhone; "
+                f"{100 * np.hypot(x, y):.0f} cm beside / {100 * z:+.0f} cm in depth from the camera; "
                 f"reprojection rms {self.rms:.2f} px over {self.n} points ({100 * self.inliers:.0f}% kept)")
 
     def to_dict(self):
