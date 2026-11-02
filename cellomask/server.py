@@ -27,6 +27,7 @@ from .shape import LearnedShape, ShapeMemory, close_across
 from .live import LiveMedia, OscOut, ndi_sources, open_live, syphon_sources
 from .composite import composite, debug_overlay, mask_roi, shape_alpha
 from .iphone import IPHONE, depth_view
+from .kinect import HELPER as KINECT_HELPER, KinectSource
 from .procam3d import Procam3D, correspondences, implausible3d, solve_projector, stable_depth
 from .relocate import PhoneTracker
 from .projector import (Calibration, decode_gray, detect, fit, fit_dense, gray_bits, implausible,
@@ -236,12 +237,21 @@ def safe_render(tuner, size, s, cello=False, body_start=0.38):
 
 LIDAR_NAME = "iPhone LiDAR (CelloDepth app)"
 LIDAR_SPECS = ("lidar", "iphone-lidar", LIDAR_NAME.lower())
+KINECT_NAME = "Kinect v2 (depth)"
+KINECT_SPECS = ("kinect", "kinect2", "kinectv2", KINECT_NAME.lower())
+
+
+def depth_cameras():
+    """The depth camera entries for the source menu."""
+    return [LIDAR_NAME] + ([KINECT_NAME] if os.access(KINECT_HELPER, os.X_OK) else [])
 
 
 def open_camera(spec, width, height):
     from bowtrack.camera import configure, pick_builtin_index, pick_by_name
     if spec.lower() in LIDAR_SPECS:
         return IPHONE, LIDAR_NAME           # streamed in by the CelloDepth app
+    if spec.lower() in KINECT_SPECS:
+        return KinectSource(width=width), KINECT_NAME
     if spec == "auto":
         idx, name = pick_builtin_index()
     elif spec.isdigit():
@@ -886,20 +896,21 @@ class Pipeline(threading.Thread):
         self.sync_log = [{"cam_noise": round(self.cam_noise, 3)}]
         self.min_wait = 0.0
         locked, shown = False, None
-        if self.camera is IPHONE:
+        cam = self.depth_camera()
+        if cam is not None:
             # expose for the projector's full white, then hold that exposure:
             # auto exposure changing between a pattern and its inverse flips
             # bits wherever daylight competes with the projector
-            self.calibrating = f"{label}locking the iPhone exposure"
+            self.calibrating = f"{label}locking the camera exposure"
             # g3 is the projector-black view: wait for the white to really
             # arrive (with before=None a stale black frame was taken as the
             # white, and every later capture ended up one pattern behind)
             shown = self._show_and_grab(white_img, g3)
             latency = self.sync_log[-1]["t_change"]
             time.sleep(1.0)
-            locked = IPHONE.lock(True)
+            locked = cam.lock(True)
             if not locked:
-                print("warning: the iPhone did not lock its exposure (update the CelloDepth app)")
+                print("warning: the depth camera did not lock its exposure (update the CelloDepth app)")
             # the reference is the white as seen with the locked exposure:
             # the one from before the lock had kept drifting with auto exposure
             seq, _ = self._next_gray(self.raw_seq)
@@ -912,7 +923,7 @@ class Pipeline(threading.Thread):
                                          min_range, dbg, label, shown)
         finally:
             if locked:
-                IPHONE.lock(False)
+                cam.lock(False)
 
     def _capture_stripes(self, w, h, white_img, black_img, drop_bits, rel_contrast, min_range,
                          dbg, label, shown=None):
@@ -1024,10 +1035,11 @@ class Pipeline(threading.Thread):
         pose relative to the phone; see procam3d.py). The flat cello
         homography is refit from the same stripes, so the current mapping
         keeps working with the phone as the camera."""
-        if self.camera is not IPHONE or not IPHONE.live:
+        cam = self.depth_camera()
+        if cam is None or not cam.live:
             return {"ok": False, "markers": 0, "total": 0,
-                    "message": "the iPhone is not streaming: choose the iPhone LiDAR source "
-                               "and press Connect in the CelloDepth app"}
+                    "message": "no depth camera streaming: choose the Kinect source, or the "
+                               "iPhone LiDAR one and press Connect in the CelloDepth app"}
         if self.settings["flip"]:
             return {"ok": False, "markers": 0, "total": 0,
                     "message": "turn Mirror off: the 3D calibration needs the camera's real image"}
@@ -1039,11 +1051,11 @@ class Pipeline(threading.Thread):
             self.calibrating = "3D: measuring depth (keep everything still)"
             time.sleep(0.8)
             region = None if self.smoother.mask is None else self.smoother.mask > 0.5
-            before = IPHONE.depth_frames(15)
+            before = cam.depth_frames(15)
             st = self.capture_stripes(drop_bits, rel_contrast, min_range, dbg, label="3D: ")
             self.proj_mode = "black"
             self.calibrating = "3D: checking nothing moved"
-            after = IPHONE.depth_frames(8)
+            after = cam.depth_frames(8)
         finally:
             self.proj_mode = prev_mode
             self.calibrating = None
@@ -1052,19 +1064,19 @@ class Pipeline(threading.Thread):
             return {"ok": False, "markers": 0, "total": 0, "message": msg}
 
         if len(before) < 5 or len(after) < 3:
-            return fail("the iPhone stopped streaming during the calibration")
+            return fail("the depth camera stopped streaming during the calibration")
         hh, ww = st["px"].shape
         if {p["orientation"] for p in before + after} != {before[0]["orientation"]} or \
                 tuple(before[0]["size"]) != (ww, hh):
-            return fail("the iPhone was turned during the calibration; mount it and try again")
+            return fail("the camera was turned during the calibration; mount it and try again")
         d0, d1 = stable_depth(before), stable_depth(after)
         both = np.isfinite(d0) & np.isfinite(d1)
         if both.sum() < 1000:
-            return fail("the LiDAR depth is unreliable everywhere: is the scene within ~5 m?")
+            return fail("the depth is unreliable everywhere: is the scene within ~4 m?")
         # relative: LiDAR depth wanders by ~1% between readings on its own
         moved = float(np.median(np.abs(d0[both] - d1[both]) / d0[both]))
         if moved > 0.02:
-            return fail(f"the scene or the phone moved during the calibration "
+            return fail(f"the scene or the camera moved during the calibration "
                         f"({100 * moved:.1f}% of the distance); keep everything still and try again")
         K = before[0]["K"]
         X, p = correspondences(st["px"], st["py"], st["valid"], d0, K)
@@ -1180,6 +1192,7 @@ class Pipeline(threading.Thread):
                           "inliers": round(float(self.learned.inliers), 2)},
                 "latency": self.latency_state(),
                 "phone": self.phone_state(),
+                "kinect": self.depthcam_state(),
                 "iphone": {"live": IPHONE.live, "fps": round(IPHONE.fps, 1),
                            "kb": None if IPHONE.kb is None else round(IPHONE.kb),
                            **IPHONE.diag,
@@ -1325,6 +1338,18 @@ class Pipeline(threading.Thread):
         med = {k: round(1000 * float(np.median([r[k] for r in results])), 1) for k in results[0]}
         return {"ok": True, "rounds": len(results), "ms": med}
 
+    def depth_camera(self):
+        """The camera when it gives depth (iPhone or Kinect), else None."""
+        cam = self.camera
+        return cam if cam is not None and hasattr(cam, "depth_frames") else None
+
+    def depthcam_state(self):
+        cam = self.depth_camera()
+        if not isinstance(cam, KinectSource):
+            return None
+        return {"kind": "kinect", "live": cam.live, "fps": round(cam.fps, 1),
+                "error": cam.error, **cam.diag}
+
     def phone_state(self):
         ph = self.phone
         if ph.ref is None:
@@ -1432,7 +1457,7 @@ def build_app(pipe):
             "instances": pipe.n_instances,
             "source": pipe.source_name,
             "replacement": pipe.replacement.name if pipe.replacement else None,
-            "cameras": (list_cameras() or []) + [LIDAR_NAME],
+            "cameras": (list_cameras() or []) + depth_cameras(),
             "replacements": list_media(REPL_DIR),
             "sources": list_media(SRC_DIR),
             "error": pipe.error,

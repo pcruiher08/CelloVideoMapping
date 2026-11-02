@@ -8,7 +8,9 @@
 # Works on macOS (Apple Silicon uses the GPU via MPS) and Linux (CUDA if an
 # NVIDIA driver is present, otherwise CPU). Needs Python 3.10-3.13; the
 # TouchDesigner links need macOS 13+ (NDI) and 12+ (Syphon). The NDI runtime
-# comes inside the cyndilib package: nothing else to install.
+# comes inside the cyndilib package: nothing else to install. On macOS the
+# Kinect v2 helper is built too (kinect/build.sh: Homebrew + a C++ compiler;
+# skipped once built, and the rest of the app works without it).
 
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -42,6 +44,16 @@ if [ "${1:-}" = "--force" ]; then
     say "Removing $VENV"
     rm -rf "$VENV"
 fi
+
+kinect() {
+    [ "$(uname)" = Darwin ] || return 0
+    if [ -x kinect/bin/cellokinect ] && [ ! kinect/cellokinect.cpp -nt kinect/bin/cellokinect ]; then
+        return 0
+    fi
+    say "Building the Kinect v2 helper (a few minutes the first time)"
+    bash kinect/build.sh || say "Warning: the Kinect helper did not build; the iPhone and webcams still work"
+}
+kinect
 
 if [ -f "$STAMP" ] && [ "$(cat "$STAMP")" = "$(sha requirements.txt)" ]; then
     say "Already installed (requirements.txt unchanged). Use --force to rebuild."

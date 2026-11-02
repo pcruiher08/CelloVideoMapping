@@ -217,7 +217,7 @@ IPHONE = IPhoneSource()             # one phone per server
 
 def depth_view(pkt, near=0.3, far=5.0):
     """Colour-coded depth for the browser (near = warm), low confidence dimmed."""
-    d = pkt["depth"]
+    d = np.nan_to_num(pkt["depth"], nan=far)   # no reading (the Kinect's) shows as far
     t = np.clip((d - near) / (far - near), 0, 1)
     img = cv2.applyColorMap((255 * (1 - t)).astype(np.uint8), cv2.COLORMAP_TURBO)
     if pkt["conf"] is not None:

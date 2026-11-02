@@ -257,11 +257,35 @@ unzip cellotracking-*.zip && cd cellotracking-*
   the iPhone stay put; otherwise press **Calibrate 3D** there (it also
   relearns the outline, with the cello alone).
 - The projector's HDMI goes to that Mac, set to **extend**.
-- In the **CelloDepth** app on the iPhone, enter that Mac's address and port
-  8000 (`show.sh` prints it).
+- The Kinect plugs into that Mac (USB 3); `show.sh` uses it. With the iPhone
+  instead (`SOURCE=lidar ./show.sh`), enter that Mac's address and port 8000
+  in the **CelloDepth** app (`show.sh` prints it).
 - Needs macOS 13+ and Python 3.10-3.13 (fetched automatically if missing);
   the NDI runtime comes with the `cyndilib` package.
 - `test_live.py` checks NDI, Syphon and OSC on one Mac with stand-in senders.
+
+### Kinect v2 as the depth camera
+
+The Kinect v2 replaces the iPhone: colour and time-of-flight depth over
+USB 3 (it needs its own power adapter), read by a small helper built on
+[libfreenect2](https://github.com/OpenKinect/libfreenect2), which is not in
+Homebrew. `install.sh` builds it (`bash kinect/build.sh`: Homebrew packages,
+then libfreenect2 and `kinect/bin/cellokinect`, about a minute).
+
+```bash
+./show.sh                       # Kinect (the default source)
+SOURCE=lidar ./show.sh          # back to the iPhone
+./run.sh --source kinect        # without the projector window
+```
+
+- Mount it rigidly beside the projector, then press **Calibrate 3D** with the
+  cello alone: calibrations made with the iPhone do not carry over.
+- Its depth is its own infrared light: the projector does not disturb it,
+  and it works in a dark hall. Range about 0.5-4.5 m.
+- The depth camera sees less than the colour one: keep the cello away from
+  the left and right edges of the image (no depth there).
+- `test_kinect.py` checks the frame format offline; `--live` also reads the
+  real Kinect for a few seconds.
 
 ## Cello replacement (`cellomask/`)
 

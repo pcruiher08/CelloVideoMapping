@@ -143,8 +143,8 @@
       <div class="row"><label for="inset_mm">Edge inset (mm)</label><input type="range" id="inset_mm" min="0" max="20" step="1"><output></output></div>
       <div class="row"><label for="predict_ms">Predict ahead (ms)</label><input type="range" id="predict_ms" min="0" max="450" step="25"><output></output></div>
       <p class="hint">Front face (3D only): no light on the neck, scroll, a hand or the bow in front of the top, and the edge pulled in so none reaches the ribs or the wall. Learned shape: the light uses the cello's own outline, fitted to the visible edges, so hands, knees or the bow cannot change it. Hands: painting over keeps the cello's whole shape lit while a hand, an arm or the bow covers part of it; leaving them dark cuts what is in front out of the light. Predict ahead: the light reaches the cello ~350 ms after the phone sees it; the mapping is moved to where the cello will be by then (0 = off; less overshoots less when the player stops suddenly).</p>
-      <button class="btn" id="calibrate3d" style="width:100%">Calibrate 3D (iPhone LiDAR, ~25 s)</button>
-      <p class="hint">Needs the iPhone LiDAR source (CelloDepth app → Connect, phone mounted beside the projector). Solves the projector's lens and position in 3D from the stripes plus depth; the lit area must include different depths (cello in front of the wall, some floor). Also refits the flat mapping above.</p>
+      <button class="btn" id="calibrate3d" style="width:100%">Calibrate 3D (Kinect / iPhone depth, ~25 s)</button>
+      <p class="hint">Needs a depth source: the Kinect v2, or the iPhone LiDAR (CelloDepth app → Connect), mounted rigidly beside the projector. Solves the projector's lens and position in 3D from the stripes plus depth; the lit area must include different depths (cello in front of the wall, some floor). Also refits the flat mapping above.</p>
       <img id="calibView" alt="What the camera saw when calibrating" hidden style="width:100%;margin-top:8px;border-radius:8px;border:1px solid var(--line)">
       <div class="seg" id="projModeSeg" style="margin-top:10px">
         <button data-v="content">Content</button>
@@ -420,16 +420,18 @@ function renderProjector() {
   st.innerHTML = (p.calibrated ? `<span class="in">Calibrated</span> · ${p.markers} markers · error ${p.error} px`
                                : '<span class="near">Not calibrated</span>')
     + ` · ${p.size[0]}×${p.size[1]} · ${p.window ? 'projector window open' : 'no projector window (start with --projector)'}`;
-  const ip = p.iphone || {};
-  $('#lidarStatus').innerHTML = (ip.live ? `<span class="in">iPhone streaming</span> · ${ip.fps} fps`
-                                         : `<span class="near">iPhone not streaming</span>${ip.connections ? ' (connected, no frames)' : ''}`)
+  const ip = p.iphone || {}, kn = p.kinect;
+  $('#lidarStatus').innerHTML = (kn ? (kn.live ? `<span class="in">Kinect streaming</span> · ${kn.fps} fps`
+                                               : `<span class="near">Kinect not streaming</span>${kn.error ? ': ' + esc(kn.error) : ' (starting…)'}`)
+    : ip.live ? `<span class="in">iPhone streaming</span> · ${ip.fps} fps`
+              : `<span class="near">iPhone not streaming</span>${ip.connections ? ' (connected, no frames)' : ''}`)
     + ' · ' + (p.procam ? `<span class="in">3D calibrated</span>: ${p.procam}` : '3D not calibrated');
   const ph = p.phone || {};
   if (p.procam) {
-    $('#lidarStatus').innerHTML += ' · ' + (!ph.reference ? '<span class="near">recalibrate 3D once to let it follow a bumped phone</span>'
-      : ph.too_far ? `<span class="near">phone moved ${ph.moved_cm} cm / ${ph.moved_deg}°: recalibrate 3D</span>`
-      : ph.tracking ? `phone moved ${ph.moved_cm} cm / ${ph.moved_deg}° (corrected)`
-      : '<span class="near">phone position not confirmed (room view changed?)</span>');
+    $('#lidarStatus').innerHTML += ' · ' + (!ph.reference ? '<span class="near">recalibrate 3D once to let it follow a bumped camera</span>'
+      : ph.too_far ? `<span class="near">camera moved ${ph.moved_cm} cm / ${ph.moved_deg}°: recalibrate 3D</span>`
+      : ph.tracking ? `camera moved ${ph.moved_cm} cm / ${ph.moved_deg}° (corrected)`
+      : '<span class="near">camera position not confirmed (room view changed?)</span>');
   }
   const sel = $('#screenSel');
   if (p.screens && document.activeElement !== sel) {
@@ -449,7 +451,7 @@ function renderProjector() {
   $('#planeStatus').innerHTML = pl
     ? `<span class="in">Mapping in 3D</span> · cello ${pl.distance.toFixed(2)} m · lean ${pl.lean > 0 ? '+' : ''}${pl.lean}° (top away) · turn ${pl.turn > 0 ? '+' : ''}${pl.turn}° (right away) · ${pl.points} depth points, ±${pl.residual_mm} mm${p.covered ? ` · ${p.covered}% covered (hand / bow)` : ''}`
     : (state.settings && state.settings.mapping === '3d'
-        ? '<span class="near">3D unavailable</span>: needs the iPhone source, a 3D calibration and the cello in view; using the flat mapping'
+        ? '<span class="near">3D unavailable</span>: needs the Kinect or iPhone source, a 3D calibration and the cello in view; using the flat mapping'
         : 'Flat mapping (fixed plane from the stripe calibration)');
   setSeg('projModeSeg', p.mode);
   $('#projModeHint').textContent = PROJ_HINTS[p.mode] || '';

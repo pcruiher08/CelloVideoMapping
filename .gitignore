@@ -11,6 +11,12 @@ ios/CelloDepth/build/
 # generated from project.yml: cd ios/CelloDepth && xcodegen
 ios/CelloDepth/*.xcodeproj/
 
+# Kinect helper: libfreenect2 sources and the build (kinect/build.sh)
+kinect/libfreenect2/
+kinect/prefix/
+kinect/bin/
+kinect/build.log
+
 # training runs and downloaded weights (only the trained cello model is kept)
 runs/
 runs_train.log
