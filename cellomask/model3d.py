@@ -27,6 +27,7 @@ frame's mask: the shape never jitters, only its position follows the cello.
 """
 
 import os
+import time
 
 import cv2
 import numpy as np
@@ -162,8 +163,30 @@ class CelloModel:
 
     def reset(self):
         self.M = np.eye(4)
+        self.Ms = None                   # M smoothed (what is drawn), see _smooth
+        self.t_s = None
         self.ok = False
         self.stats = {}
+
+    def _smooth(self, M, t, min_cutoff=1.5, beta=30.0, lever=0.3):
+        """One Euro smoothing of the pose: the fit's own noise (~1-2 mm,
+        a fraction of a degree) moved the drawn outline every frame, a
+        quiver on a still cello. Cutoff rises with speed (m/s; rotation
+        counted at `lever` m from the centre), so a moving cello is not
+        held back."""
+        if self.Ms is None or self.t_s is None or t - self.t_s > 0.5:
+            self.Ms, self.t_s = M.copy(), t
+            return self.Ms
+        dt = max(t - self.t_s, 1e-3)
+        D = M @ np.linalg.inv(self.Ms)
+        w = cv2.Rodrigues(D[:3, :3])[0].ravel()
+        tr = D[:3, 3]
+        speed = (np.linalg.norm(tr) + lever * np.linalg.norm(w)) / dt
+        tau = 1.0 / (2 * np.pi * (min_cutoff + beta * speed))
+        a = 1.0 / (1.0 + tau / dt)
+        self.Ms = rigid(rodrigues(a * w), a * tr) @ self.Ms
+        self.t_s = t
+        return self.Ms
 
     def load(self):
         if os.path.exists(self.path):
@@ -247,8 +270,9 @@ class CelloModel:
         return tuple(float(np.ptp(Q @ ax[:, i])) for i in range(2))
 
     def plane(self):
-        """(C, n) of the scan's plane at the current pose."""
-        R, t = self.M[:3, :3], self.M[:3, 3]
+        """(C, n) of the scan's plane at the current (smoothed) pose."""
+        M = self.M if self.Ms is None else self.Ms
+        R, t = M[:3, :3], M[:3, 3]
         return R @ self.C0 + t, R @ self.n0
 
     def track(self, visible, pkt, K):
@@ -322,6 +346,9 @@ class CelloModel:
             self.ok = False
             return None
         self.M, self.ok = M, True
+        Ms = self._smooth(M, time.time())
+        if Ms is not M:
+            out = self.render(Ms, K, (w, h))
         return out.astype(np.float32)
 
     def _fit(self, M, P, N, Kd, near, lab, half, K, iters, g3s, g2s):

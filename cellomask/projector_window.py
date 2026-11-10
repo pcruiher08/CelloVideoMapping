@@ -16,6 +16,11 @@ Keys in the window:  f  cover the screen / normal window   b  blackout on/off
 
 The web page's Projector section lists the screens and moves the window to
 another one live (pipe.screen_request, handled here on the main thread).
+
+Between tracked frames (~20 a second) the image is moved at the display's
+60 Hz: each frame comes with the motion filters it was drawn with, and every
+redraw warps it by Pipeline.display_warp for that moment, in a shader. The
+light then glides with the cello instead of jumping every third refresh.
 """
 
 import time
@@ -74,6 +79,60 @@ def uncover(win, screen):
     win.covering = False
 
 
+# full-screen quad; each display pixel looks up the image pixel the warp
+# brings to it (image pixels have a top-left origin, rows down)
+_VERT = """#version 150 core
+in vec2 position;
+void main() { gl_Position = vec4(position, 0.0, 1.0); }
+"""
+_FRAG = """#version 150 core
+out vec4 color;
+uniform sampler2D tex;
+uniform mat3 Dinv;      // display (image) pixel -> source image pixel
+uniform vec2 img;       // image size
+uniform vec2 fb;        // framebuffer size
+void main() {
+    vec2 p = vec2(gl_FragCoord.x, fb.y - gl_FragCoord.y) * img / fb - 0.5;
+    vec3 q = Dinv * vec3(p, 1.0);
+    vec2 s = q.xy / q.z;
+    vec2 uv = vec2((s.x + 0.5) / img.x, 1.0 - (s.y + 0.5) / img.y);
+    if (q.z <= 0.0 || uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0)
+        color = vec4(0.0, 0.0, 0.0, 1.0);
+    else
+        color = vec4(texture(tex, uv).rgb, 1.0);
+}
+"""
+
+
+class Warper:
+    """Draws a texture warped by a 3x3 homography (image pixels), on the GPU."""
+
+    def __init__(self):
+        import pyglet
+        from pyglet import gl
+        from pyglet.graphics.shader import Shader, ShaderProgram
+        self.gl = gl
+        self.prog = ShaderProgram(Shader(_VERT, "vertex"), Shader(_FRAG, "fragment"))
+        self.quad = self.prog.vertex_list(4, gl.GL_TRIANGLE_STRIP,
+                                          position=("f", (-1, -1, 1, -1, -1, 1, 1, 1)))
+        self.pyglet = pyglet
+
+    def draw(self, tex, D, img_size, fb_size):
+        gl = self.gl
+        Dinv = np.linalg.inv(D)
+        self.prog.use()
+        self.prog["tex"] = 0
+        self.prog["Dinv"] = tuple(float(v) for v in Dinv.T.ravel())   # column-major
+        self.prog["img"] = (float(img_size[0]), float(img_size[1]))
+        self.prog["fb"] = (float(fb_size[0]), float(fb_size[1]))
+        gl.glActiveTexture(gl.GL_TEXTURE0)
+        gl.glBindTexture(tex.target, tex.id)
+        gl.glTexParameteri(tex.target, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
+        gl.glTexParameteri(tex.target, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
+        self.quad.draw(gl.GL_TRIANGLE_STRIP)
+        self.prog.stop()
+
+
 def open_window(pipe, spec="auto", fullscreen=True):
     import pyglet
     idx, screen = pick_screen(spec)
@@ -105,7 +164,12 @@ def run_window(pipe, win):
     from pyglet import gl
 
     state = {"seq": -1, "image": None, "before_blackout": "content", "drawn": -1, "bright": None,
-             "listed": time.time()}
+             "listed": time.time(), "tex": None, "motion": None}
+    try:
+        warper = Warper()
+    except Exception as e:                   # no shaders: draw unwarped, as before
+        print(f"projector window: no GPU warp ({e!r}); the light moves at the tracking rate")
+        warper = None
 
     def move(idx):
         """Cover screen `idx` (from the web page)."""
@@ -128,8 +192,12 @@ def run_window(pipe, win):
             pipe.screens = list_screens()
         if pipe.proj_seq == state["seq"] or pipe.proj_frame is None:
             return
+        motion = pipe.proj_motion
         state["seq"] = pipe.proj_seq
         f = pipe.proj_frame
+        # the motion that belongs to this frame (set before it), or none
+        state["motion"] = motion if motion is not None and motion["seq"] == state["seq"] else None
+        state["tex"] = None
         h, w = f.shape[:2]
         # BGR rows top-down as they are: GL takes BGR, and a negative pitch
         # tells pyglet the rows run downwards (half the cost of flipping and
@@ -144,8 +212,20 @@ def run_window(pipe, win):
         win.clear()
         img = state["image"]
         if img is not None:
-            gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
-            img.blit(0, 0, width=win.width, height=win.height)
+            D = None
+            if warper is not None and state["motion"] is not None:
+                try:
+                    D = pipe.display_warp(state["motion"], time.time())
+                except Exception as e:           # never let this blank the projector
+                    print(f"display warp: {e!r}")
+                    state["motion"] = None
+            if D is not None:
+                if state["tex"] is None:
+                    state["tex"] = img.get_texture()
+                warper.draw(state["tex"], D, (img.width, img.height), win.get_framebuffer_size())
+            else:
+                gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
+                img.blit(0, 0, width=win.width, height=win.height)
             if state["drawn"] != state["seq"]:
                 state["drawn"] = state["seq"]
                 pipe.mark_drawn(state["seq"], time.time(), state["bright"])

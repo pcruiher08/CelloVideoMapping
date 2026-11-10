@@ -126,8 +126,55 @@ def main():
     ok &= check("plane tilt predicted", np.mean(errs1) < 0.85 * np.mean(errs0),
                 f"tilt error {np.mean(errs0):.2f} -> {np.mean(errs1):.2f} deg mean")
 
+    ok &= check("display warp follows the forecast", *display_warp_check())
+
     print("ALL TESTS PASSED" if ok else "SOME TESTS FAILED")
     raise SystemExit(0 if ok else 1)
+
+
+def display_warp_check():
+    """The projector window moves a frame drawn for time t_r to time t_d
+    (Pipeline.display_warp): a point of the cello must land where a frame
+    drawn for t_d would have put it, with the 2D and the plane forecasts
+    both moving."""
+    from cellomask.cello3d import CelloPlane
+    from cellomask.procam3d import Procam3D
+    from cellomask.server import Pipeline
+    K = np.array([[540.0, 0, 479.5], [0, 540.0, 269.5], [0, 0, 1]])
+    a = np.radians(3)
+    R = np.array([[np.cos(a), 0, np.sin(a)], [0, 1, 0], [-np.sin(a), 0, np.cos(a)]])
+    procam = Procam3D(np.array([[3000.0, 0, 940], [0, 3000.0, 1100], [0, 0, 1]]), np.zeros(5), R,
+                      np.array([0.2, 0.15, 0.05]), (1920, 1200))
+    pose, plane_pred = PosePredictor(), PlanePredictor()
+    rng = np.random.default_rng(3)
+    for k in range(2 * FPS):                 # moving right and leaning back, steadily
+        t = k / FPS
+        pose.update(cello(320 + 150 * t, 0.2 * t, rng), t)
+        n = np.array([0.0, np.sin(0.1 * t), -np.cos(0.1 * t)])
+        plane_pred.update(np.array([0.3 * t - 0.1, 0.05, 2.0]), n, t)
+    base = CelloPlane()
+    base.C, base.n = np.array([0.0, 0.05, 2.0]), np.array([0.0, 0.0, -1.0])
+    roi = (200, 60, 760, 500)
+    t_r = t + 0.25
+    motion = {"t_target": t_r, "t_pub": 100.0, "pose": pose, "plane": plane_pred, "base": base,
+              "warp": ("3d", K, roi, procam, np.eye(3))}
+    D = Pipeline.display_warp(None, motion, 100.0 + 0.05)          # 50 ms after it was drawn
+    t_d = t_r + 0.05
+
+    def drawn_at(tt, u):
+        A = np.vstack([pose.delta(tt), [0, 0, 1]])
+        H = base.moved(*plane_pred.at(tt)).homography(procam, K, roi)
+        q = H @ A @ np.r_[u, 1.0]
+        return q[:2] / q[2]
+
+    errs, moves = [], []
+    for u in [(300, 150), (500, 300), (650, 420), (420, 250)]:
+        q_r, q_d = drawn_at(t_r, u), drawn_at(t_d, u)
+        q = D @ np.r_[q_r, 1.0]
+        errs.append(np.linalg.norm(q[:2] / q[2] - q_d))
+        moves.append(np.linalg.norm(q_d - q_r))
+    return (max(errs) < 0.5 and np.mean(moves) > 2,
+            f"moves {np.mean(moves):.1f} px in 50 ms, lands within {max(errs):.2f} px of a fresh frame")
 
 
 if __name__ == "__main__":

@@ -11,6 +11,7 @@ Resolume/TouchDesigner).
 """
 
 import argparse
+import copy
 import json
 import os
 import re
@@ -70,6 +71,7 @@ DEFAULTS = {
     "depth_shape": "scan",   # scan (the learned 3D scan, fitted; flood fill when it is lost) | fill | off
     "osc_host": "",          # TouchDesigner's address for the cello's state over OSC ("" = off)
     "osc_port": 9000,
+    "display_warp": True,    # move the light at the display's 60 Hz between tracked frames
     "predict_ms": 250,       # draw the cello this far ahead of its capture (0 = off); the light lags ~350 ms
 }
 
@@ -473,6 +475,11 @@ class Pipeline(threading.Thread):
         self.proj_mode = "content"   # content | white | outline | grid | black | pattern
         self.proj_frame = None       # BGR image for the native projector window
         self.proj_seq = 0
+        # how to move proj_frame between tracked frames (display_warp): the
+        # motion filters as they were when it was drawn, and its mapping
+        self.proj_motion = None
+        self._warp = None              # the last projector image's mapping (render_projector)
+        self._t_target = None          # the time that image was predicted for (ahead)
         self.projector_window = False
         self.pattern = None          # (image, corners) while calibrating
         self.raw_frame = None        # latest processed camera frame (what the mask is in)
@@ -803,10 +810,20 @@ class Pipeline(threading.Thread):
             try:
                 ahead = self.ahead(face, axis, quad, s)
                 tick("predict")
+                self._warp = None
                 pf = self.render_projector(frame, *ahead, repl, s)
             except Exception as e:       # never let the projector stop the loop
                 print(f"projector: {e!r}")
                 pf = np.zeros((self.proj_size[1], self.proj_size[0], 3), np.uint8)
+                self._warp = None
+            motion = None
+            if self._warp is not None and self._t_target is not None and s["display_warp"]:
+                # the filters' state now: the window extrapolates this frame
+                # with it, so the light keeps moving between tracked frames
+                motion = {"seq": self.proj_seq + 1, "t_target": self._t_target, "t_pub": time.time(),
+                          "pose": copy.deepcopy(self.pose_pred), "plane": copy.deepcopy(self.plane_pred),
+                          "base": copy.copy(self.plane), "warp": self._warp}
+            self.proj_motion = motion          # set before the frame it belongs to
             self.proj_frame = pf
             self.proj_seq += 1
             rec = self.recording
@@ -981,9 +998,11 @@ class Pipeline(threading.Thread):
         projector's light lands: `predict_ms` after the frame's capture
         (predict.py). Unchanged with prediction off."""
         lead = s["predict_ms"] / 1000
+        self._t_target = None
         if lead <= 0 or face is None:
             return face, axis, quad, None
         t = self.t_meas + lead
+        self._t_target = t
         A = self.pose_pred.delta(t)
         face, axis = apply_mask(A, face), apply_axis(A, axis)
         plane = None
@@ -1040,11 +1059,45 @@ class Pipeline(threading.Thread):
                             inward=True)
         if self.view3d is not None:
             K = self.view3d[0]
-            H = (plane or self.plane).homography(self.procam_live or self.procam, K, roi)
-            if self.calib is not None:               # the Shift / Scale nudge still applies
-                H = self.calib.nudge() @ H
+            procam = self.procam_live or self.procam
+            H = (plane or self.plane).homography(procam, K, roi)
+            nudge = self.calib.nudge() if self.calib is not None else np.eye(3)
+            H = nudge @ H                            # the Shift / Scale nudge still applies
+            self._warp = ("3d", K, roi, procam, nudge)
             return Calibration(H, self.proj_size).warp(cam, roi)
+        self._warp = ("flat", self.calib.matrix((cam.shape[1], cam.shape[0])))
         return self.calib.warp(cam, roi)
+
+    def display_warp(self, motion, now):
+        """Projector pixels -> projector pixels moving the image drawn for
+        `motion` (proj_motion) to where the cello is at `now`: the filters
+        it was drawn with, run on from the time it was predicted for by the
+        time since. The cello is near enough a plane that its motion is a
+        homography in the projector (camera motion A in the image, then the
+        plane's own mapping), so the window applies it on the GPU at the
+        display's 60 Hz while tracking runs at ~20. None: draw as is."""
+        if motion is None:
+            return None
+        t_r = motion["t_target"]
+        t_d = t_r + min(max(now - motion["t_pub"], 0.0), 0.2)   # never more than 0.2 s on
+        pose = motion["pose"]
+        a_r, a_d = pose.delta(t_r), pose.delta(t_d)
+        if a_r is None or a_d is None:
+            return None
+        A = np.vstack([a_d, [0, 0, 1]]) @ np.linalg.inv(np.vstack([a_r, [0, 0, 1]]))
+        warp = motion["warp"]
+        if warp[0] == "flat":
+            Hf = warp[1]
+            return Hf @ A @ np.linalg.inv(Hf)
+        _, K, roi, procam, nudge = warp
+        pp, base = motion["plane"], motion["base"]
+        p_r, p_d = pp.at(t_r), pp.at(t_d)
+        if p_r is None or p_d is None:
+            return None
+        H_r = nudge @ base.moved(*p_r).homography(procam, K, roi)
+        H_d = nudge @ base.moved(*p_d).homography(procam, K, roi)
+        D = H_d @ A @ np.linalg.inv(H_r)
+        return D / D[2, 2]
 
     def _next_gray(self, last, timeout=2.0):
         """(seq, grey image) of the first camera frame newer than `last`."""

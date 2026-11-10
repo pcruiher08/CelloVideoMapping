@@ -66,6 +66,18 @@ class KalmanCV:
     def velocity(self):
         return 0.0 if self.x is None else float(self.x[1])
 
+    @property
+    def trusted_velocity(self):
+        """The velocity shrunk towards zero unless it clearly exceeds its own
+        uncertainty: v * v^2 / (v^2 + sigma^2). On a still cello the
+        estimate is pure noise (cx: ~23 px/s), which a 0.25 s prediction
+        turned into ~6 px of quiver every frame; a real sway is several
+        sigma and keeps nearly all of it."""
+        if self.x is None:
+            return 0.0
+        v, s2 = float(self.x[1]), float(self.P[1, 1])
+        return v * v * v / (v * v + s2)
+
 
 def mask_pose(mask):
     """(cx, cy, angle from straight up in radians, log of the area's square
@@ -126,7 +138,7 @@ class PosePredictor:
         dt = max(0.0, t - self.t)
         lead = damping * (1 - np.exp(-dt / damping)) if damping > 0 else dt
         cx, cy, a, ls = (f.value for f in self.f)
-        vx, vy, va, vs = (f.velocity for f in self.f)
+        vx, vy, va, vs = (f.trusted_velocity for f in self.f)
         size = np.exp(ls)
         dx, dy = vx * lead, vy * lead
         n = np.hypot(dx, dy)
@@ -192,6 +204,6 @@ class PlanePredictor:
             return None
         dt = max(0.0, t - self.t)
         lead = damping * (1 - np.exp(-dt / damping)) if damping > 0 else dt
-        v = np.array([f.value + f.velocity * lead for f in self.f])
+        v = np.array([f.value + f.trusted_velocity * lead for f in self.f])
         C, n = v[:3], v[3:]
         return C, n / np.linalg.norm(n)
