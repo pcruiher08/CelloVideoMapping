@@ -167,6 +167,7 @@ class CelloModel:
         self.lost_R = None               # rotation when last tracked: where to start when lost
         self.t_ok = None                 # when the fit last succeeded
         self.t_s = None
+        self.speed = 0.0                 # how fast the cello moves (m/s, smoothed)
         self.ok = False
         self.stats = {}
 
@@ -184,6 +185,7 @@ class CelloModel:
         w = cv2.Rodrigues(D[:3, :3])[0].ravel()
         tr = D[:3, 3]
         speed = (np.linalg.norm(tr) + lever * np.linalg.norm(w)) / dt
+        self.speed = 0.7 * self.speed + 0.3 * speed       # m/s, for the light's motion inset
         tau = 1.0 / (2 * np.pi * (min_cutoff + beta * speed))
         a = 1.0 / (1.0 + tau / dt)
         self.Ms = rigid(rodrigues(a * w), a * tr) @ self.Ms
@@ -195,6 +197,8 @@ class CelloModel:
             try:
                 d = np.load(self.path)
                 self._set(d["S"], d["O"], d["C"], d["n"], tuple(int(v) for v in d["size"]))
+                if "edge_corr" in d and self.body2d is not None and len(d["edge_corr"]) == len(self.body2d[0]):
+                    self.edge_corr = d["edge_corr"].astype(np.float64)
             except Exception as e:
                 print(f"cello scan not loaded: {e!r}")
 
@@ -203,11 +207,15 @@ class CelloModel:
         self.C0, self.n0 = np.asarray(C, np.float64), np.asarray(n, np.float64)
         self.size = size
         self.faces = {}                  # (inset mm, whole) -> outline to light (3D, scan frame)
+        self.body2d = None               # body outline points and inward normals (flat, m)
         try:
             self._clean_shape()
         except Exception as e:           # keep the traced outline
             print(f"cello scan: outline not cleaned ({e!r})")
             self.shape2d = None
+        # per body-outline point: how far (m) to pull the light in beyond the
+        # inset, measured on the cello by fit_edge (+ in, - out)
+        self.edge_corr = None if self.body2d is None else np.zeros(len(self.body2d[0]))
         self.reset()
 
     # --- the clean shape -------------------------------------------------------
@@ -277,9 +285,28 @@ class CelloModel:
         self.shape2d = {"clean": clean, "body": body, "lo": lo, "Cr": Cr, "u": u, "v": v, "n": n,
                         "symmetry": float(sym)}
         self.O = self._outline3d(clean)
+        # the body's outline as points with inward normals: each is pulled in
+        # by the inset plus its own measured correction (face)
+        xy = self._outline2d(body)
+        t = np.roll(xy, -1, 0) - np.roll(xy, 1, 0)
+        nrm = np.c_[-t[:, 1], t[:, 0]]
+        nrm /= np.linalg.norm(nrm, axis=1, keepdims=True) + 1e-12
+        probe = ((xy[0] + 0.004 * nrm[0] - lo) / r).astype(np.float32)
+        cnt = ((xy - lo) / r).astype(np.float32).reshape(-1, 1, 2)
+        if cv2.pointPolygonTest(cnt, (float(probe[0]), float(probe[1])), False) < 0:
+            nrm = -nrm                                # make them point inwards
+        self.body2d = (xy, nrm)
+
+    def _to3d(self, xy):
+        sh = self.shape2d
+        return sh["Cr"] + np.outer(xy[:, 0], sh["u"]) + np.outer(xy[:, 1], sh["v"])
 
     def _outline3d(self, m):
         """The largest outline of a flat-shape mask, as 3D points on the rim plane."""
+        return self._to3d(self._outline2d(m))
+
+    def _outline2d(self, m):
+        """The largest outline of a flat-shape mask, smoothed, in plane metres."""
         sh = self.shape2d
         cnts, _ = cv2.findContours(m.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
         c = max(cnts, key=cv2.contourArea)[:, 0, :].astype(np.float64)
@@ -289,9 +316,7 @@ class CelloModel:
         k /= k.sum()
         c = np.stack([np.convolve(np.r_[c[-9:, i], c[:, i], c[:9, i]], k, "valid") for i in range(2)], 1)
         c = c[::max(1, len(c) // 600)]
-        lo, Cr, u, v = sh["lo"], sh["Cr"], sh["u"], sh["v"]
-        xy = (c + 0.5) * self.RES + lo
-        return Cr + np.outer(xy[:, 0], u) + np.outer(xy[:, 1], v)
+        return (c + 0.5) * self.RES + sh["lo"]
 
     def face(self, inset_mm, whole=False):
         """The outline to light (3D, scan frame): the body without neck and
@@ -302,11 +327,16 @@ class CelloModel:
             sh = self.shape2d
             if sh is None:
                 return self.O
-            m = sh["clean"] if whole else sh["body"]
-            k = int(round(inset_mm / 1000 / self.RES))
-            if k > 0:
-                m = cv2.erode(m, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * k + 1,) * 2))
-            self.faces[key] = self._outline3d(m)
+            if not whole and self.body2d is not None:
+                xy, nrm = self.body2d
+                off = inset_mm / 1000 + self.edge_corr
+                self.faces[key] = self._to3d(xy + nrm * off[:, None])
+            else:
+                m = sh["clean"]
+                k = int(round(inset_mm / 1000 / self.RES))
+                if k > 0:
+                    m = cv2.erode(m, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * k + 1,) * 2))
+                self.faces[key] = self._outline3d(m)
         return self.faces[key]
 
     def held(self, hold=0.5):
@@ -314,6 +344,32 @@ class CelloModel:
         dropped fit or two must not flash the raw segmentation's edge)."""
         return (not self.ok and self.t_ok is not None and self.Ms is not None
                 and time.time() - self.t_ok < hold)
+
+    def body_pixels(self, K, inset_mm):
+        """The body outline as lit now (inset + corrections) in camera pixels,
+        and each point's outward normal there (unit, camera px)."""
+        if not self.ok or self.body2d is None:
+            return None
+        M = self.M if self.Ms is None else self.Ms
+        xy, nrm = self.body2d
+        off = inset_mm / 1000 + self.edge_corr
+
+        def cam(p2):
+            o = self._to3d(p2) @ M[:3, :3].T + M[:3, 3]
+            return np.c_[o[:, 0] / o[:, 2] * K[0, 0] + K[0, 2], o[:, 1] / o[:, 2] * K[1, 1] + K[1, 2]]
+        p = cam(xy + nrm * off[:, None])
+        out = p - cam(xy + nrm * (off[:, None] + 0.004))     # 4 mm further in -> outwards
+        out /= np.linalg.norm(out, axis=1, keepdims=True) + 1e-12
+        return p, out
+
+    def set_edge_corr(self, corr, save=True):
+        """New per-point corrections (m): the light's outline is rebuilt."""
+        self.edge_corr = np.asarray(corr, np.float64)
+        self.faces = {}
+        if save and os.path.exists(self.path):
+            d = dict(np.load(self.path))
+            d["edge_corr"] = self.edge_corr
+            np.savez_compressed(self.path, **d)
 
     def face_pixels(self, K, inset_mm, whole=False, hold=False):
         """The light's outline this frame in camera pixels (N x 2): the clean

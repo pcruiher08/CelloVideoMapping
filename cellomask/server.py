@@ -72,6 +72,7 @@ DEFAULTS = {
     "osc_host": "",          # TouchDesigner's address for the cello's state over OSC ("" = off)
     "osc_port": 9000,
     "display_warp": True,
+    "motion_inset": 20.0,    # extra edge inset while the cello moves: mm per m/s (up to 12 mm; 0 = off)
     "yolo_every": 3,         # with the scan locked on, detect on 1 frame in this many; depth alone between (1 = every frame)    # move the light at the display's 60 Hz between tracked frames
     "predict_ms": 250,       # draw the cello this far ahead of its capture (0 = off); the light lags ~350 ms
 }
@@ -496,6 +497,7 @@ class Pipeline(threading.Thread):
         self.depth_only_run = 0        # depth-only frames since the last detection
         self.depth_only_share = 0.0    # fraction of frames tracked from depth alone (smoothed)
         self.scan_share = 0.0          # fraction of frames the scan fitted (smoothed)
+        self.motion_extra = 0.0        # the edge's extra inset now (mm), from the cello's speed
         self.seen = None               # the cello as segmented this frame (for learning)
         self.covered = 0.0             # fraction of the cello covered (hand, arm, bow)
         self.screens, self.screen_index = [], None   # displays, and the projector window's
@@ -895,7 +897,11 @@ class Pipeline(threading.Thread):
             # per-frame re-cutting, so a smooth, steady edge; the projector
             # cuts its edge from the same outline at its own resolution
             try:
-                inset = s["inset_mm"] if s["surface"] == "front" else 0.0
+                # moving fast, the light trails or overshoots for a moment:
+                # pull its edge in by more while it moves (fades over ~0.3 s)
+                want = min(12.0, s["motion_inset"] * self.model.speed)
+                self.motion_extra = max(want, self.motion_extra - 1.5)
+                inset = (s["inset_mm"] + round(self.motion_extra)) if s["surface"] == "front" else 0.0
                 whole = s["surface"] != "front"
                 self._face_px = self.model.face_pixels(Kf, inset, whole, hold=True)
                 face = self.model.render_face(Kf, frame.shape[1::-1], inset, whole=whole, hold=True)
@@ -1746,8 +1752,74 @@ class Pipeline(threading.Thread):
         os.makedirs(self.debug_dir, exist_ok=True)
         cv2.imwrite(os.path.join(self.debug_dir, "spill.jpg"), vis)
         np.savez_compressed(os.path.join(self.debug_dir, "spill.npz"), mask=mask, diff=diff, dark=dark)
-        self._spill = (face, lit)
+        self._spill = (face, lit, mask)
         return res
+
+    def fit_edge(self, rounds=4, step=0.002, reach=16):
+        """Edge auto-fit, the cello still: light it white and, at each point
+        of the body's outline, look outward in the camera image: light past
+        the cello's edge (spill, often landing on the wall behind) pulls that
+        point in, light stopping short of where it should end pushes it out.
+        The corrections are smoothed along the outline, kept in the scan
+        (data/cello_model.npz) and used from then on. Kept only if the spill
+        measures lower."""
+        mdl = self.model
+        if mdl.body2d is None or not mdl.ok:
+            return {"ok": False, "message": "the 3D scan must be fitted to the cello (Calibrate 3D or Learn first)"}
+        s = dict(self.settings)
+        start = mdl.edge_corr.copy()
+        corr = start.copy()
+        before = None
+        g = np.exp(-0.5 * (np.arange(-30, 31) / 10.0) ** 2)
+        g /= g.sum()
+        for _ in range(rounds):
+            r = self.measure_spill()
+            if not r.get("ok"):
+                mdl.set_edge_corr(start, save=False)
+                return r
+            before = before or r
+            _, lit, mask = self._spill
+            K = self.frame_K(self.depth_pkt, mask.shape)
+            bp = None if K is None else mdl.body_pixels(K, s["inset_mm"])
+            if bp is None:
+                mdl.set_edge_corr(start, save=False)
+                return {"ok": False, "message": "lost the cello during the fit; keep it still"}
+            p, out = bp
+            h, w = mask.shape
+            near = cv2.dilate(mask.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0   # its edge, give or take a pixel
+
+            def at(t):
+                q = np.round(p + t * out).astype(int)
+                okq = (q[:, 0] >= 0) & (q[:, 0] < w) & (q[:, 1] >= 0) & (q[:, 1] < h)
+                q = np.clip(q, 0, [w - 1, h - 1])
+                return q, okq
+            spill = np.zeros(len(p), bool)
+            for t in range(2, reach):
+                q, okq = at(t)
+                spill |= okq & lit[q[:, 1], q[:, 0]] & ~near[q[:, 1], q[:, 0]]
+            # short: dark just inside the edge but lit further in (where the
+            # cello itself looks dark, its varnish in shadow or black wood,
+            # nothing is seen lit at all, and pushing out there only spills)
+            short = np.ones(len(p), bool)
+            for t in (-3, -2):
+                q, okq = at(t)
+                short &= okq & mask[q[:, 1], q[:, 0]] & ~lit[q[:, 1], q[:, 0]]
+            for t in (-8, -7):
+                q, okq = at(t)
+                short &= lit[q[:, 1], q[:, 0]]
+            delta = step * spill - step * (short & ~spill)
+            delta = np.convolve(np.r_[delta[-30:], delta, delta[:30]], g, "valid")
+            corr = np.clip(corr + delta, -0.008, 0.015)
+            mdl.set_edge_corr(corr, save=False)
+            time.sleep(0.3)
+        after = self.measure_spill()
+        better = after.get("ok") and after["spill_vs_mask"] < before["spill_vs_mask"] and \
+            after["face_coverage"] > before["face_coverage"] - 0.04
+        mdl.set_edge_corr(corr if better else start, save=better)
+        msg = (f"spill {100 * before['spill_vs_mask']:.1f}% -> {100 * after.get('spill_vs_mask', 0):.1f}%, "
+               f"light on the face {100 * before['face_coverage']:.0f}% -> {100 * after.get('face_coverage', 0):.0f}%")
+        return {"ok": bool(better), "message": ("edge fitted: " if better else "no improvement, kept the edge as it was: ") + msg,
+                "corr_mm": [round(1000 * float(corr.min()), 1), round(1000 * float(corr.max()), 1)]}
 
     def auto_align(self, rounds=2, reach=60):
         """Closed loop: light the cello white, see where the light lands in
@@ -1765,7 +1837,7 @@ class Pipeline(threading.Thread):
                 return r
             if before is None:
                 before = r
-            face, lit = self._spill
+            face, lit, _ = self._spill
             if lit.sum() < 200:
                 return {"ok": False, "message": "the light is not seen on the cello (is it in the light, the room dim enough?)"}
             s = best_shift(lit, face, reach)
@@ -2106,6 +2178,15 @@ def build_app(pipe):
         finally:
             sender.cancel()
             IPHONE.connected -= 1
+
+    @app.post("/api/projector/fit_edge")
+    def projector_fit_edge():
+        if not calib_lock.acquire(blocking=False):
+            raise HTTPException(409, "a calibration is already running")
+        try:
+            return pipe.fit_edge()
+        finally:
+            calib_lock.release()
 
     @app.post("/api/projector/align")
     def projector_align():
