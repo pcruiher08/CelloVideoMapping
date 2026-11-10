@@ -315,18 +315,23 @@ class CelloModel:
         return (not self.ok and self.t_ok is not None and self.Ms is not None
                 and time.time() - self.t_ok < hold)
 
-    def render_face(self, K, size, inset_mm, whole=False, hold=False):
-        """The light's shape this frame: the clean (body or whole) outline at
-        the smoothed pose, with anti-aliased edges (float 0..1, frame size).
-        hold: also while held() (at the last pose)."""
+    def face_pixels(self, K, inset_mm, whole=False, hold=False):
+        """The light's outline this frame in camera pixels (N x 2): the clean
+        (body or whole) shape at the smoothed pose. hold: also while held()."""
         if not (self.ok or (hold and self.held())):
             return None
         M = self.M if self.Ms is None else self.Ms
         o = self.face(inset_mm, whole) @ M[:3, :3].T + M[:3, 3]
         if (o[:, 2] < 0.1).any():
             return None
+        return np.c_[o[:, 0] / o[:, 2] * K[0, 0] + K[0, 2], o[:, 1] / o[:, 2] * K[1, 1] + K[1, 2]]
+
+    def render_face(self, K, size, inset_mm, whole=False, hold=False):
+        """face_pixels filled, with anti-aliased edges (float 0..1, frame size)."""
+        px = self.face_pixels(K, inset_mm, whole, hold)
+        if px is None:
+            return None
         w, h = size
-        px = np.c_[o[:, 0] / o[:, 2] * K[0, 0] + K[0, 2], o[:, 1] / o[:, 2] * K[1, 1] + K[1, 2]]
         out = np.zeros((h, w), np.uint8)
         cv2.fillPoly(out, [np.round(px * 16).astype(np.int32)], 255, lineType=cv2.LINE_AA, shift=4)
         return out.astype(np.float32) / 255.0

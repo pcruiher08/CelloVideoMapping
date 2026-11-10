@@ -518,6 +518,8 @@ class Pipeline(threading.Thread):
         # motion filters as they were when it was drawn, and its mapping
         self.proj_motion = None
         self._warp = None              # the last projector image's mapping (render_projector)
+        self._face_px = None           # the scan's outline this frame (camera px): the light's crisp edge
+        self._ahead_A = None           # the 2D motion forecast applied to this frame (ahead)
         self._t_target = None          # the time that image was predicted for (ahead)
         self.projector_window = False
         self.pattern = None          # (image, corners) while calibrating
@@ -887,13 +889,16 @@ class Pipeline(threading.Thread):
             self.pose_pred.reset()
         # what gets light: the front face when depth allows, else the mask
         face = None
+        self._face_px = None
         if scanned is not None and s["hands"] == "paint":
             # the scan's clean shape (body, or whole), moved into place: no
-            # per-frame re-cutting, so a smooth, steady edge
+            # per-frame re-cutting, so a smooth, steady edge; the projector
+            # cuts its edge from the same outline at its own resolution
             try:
-                face = self.model.render_face(Kf, frame.shape[1::-1],
-                                              s["inset_mm"] if s["surface"] == "front" else 0.0,
-                                              whole=s["surface"] != "front", hold=True)
+                inset = s["inset_mm"] if s["surface"] == "front" else 0.0
+                whole = s["surface"] != "front"
+                self._face_px = self.model.face_pixels(Kf, inset, whole, hold=True)
+                face = self.model.render_face(Kf, frame.shape[1::-1], inset, whole=whole, hold=True)
             except Exception as e:
                 print(f"scan face: {e!r}")
         if face is not None:
@@ -1113,11 +1118,13 @@ class Pipeline(threading.Thread):
         (predict.py). Unchanged with prediction off."""
         lead = s["predict_ms"] / 1000
         self._t_target = None
+        self._ahead_A = None
         if lead <= 0 or face is None:
             return face, axis, quad, None
         t = self.t_meas + lead
         self._t_target = t
         A = self.pose_pred.delta(t)
+        self._ahead_A = A
         face, axis = apply_mask(A, face), apply_axis(A, axis)
         plane = None
         if self.view3d is not None:
@@ -1153,9 +1160,19 @@ class Pipeline(threading.Thread):
             return g
         if mask is None:
             return black
-        roi = mask_roi(mask, 2 * s["feather"] + abs(s["grow"]) + 6)
+        edge = self._face_px if mode in ("white", "content") else None
+        feather = s["feather"]
+        if edge is not None:
+            # the edge comes from the outline itself, cut at projector
+            # resolution below; draw a little past it here so the cut, not
+            # the camera's coarse pixels (~4 mm on the cello), makes the edge
+            mask = cv2.dilate(mask, np.ones((7, 7), np.uint8))
+            feather = 0
+        roi = mask_roi(mask, 2 * feather + abs(s["grow"]) + 6)
         if roi is None:
             return black
+        s_feather = s["feather"]
+        s = dict(s, feather=feather)
         if mode == "white":                  # the mask as white light: alignment check
             x0, y0, x1, y1 = roi
             cam = np.zeros_like(frame)
@@ -1178,9 +1195,51 @@ class Pipeline(threading.Thread):
             nudge = self.calib.nudge() if self.calib is not None else np.eye(3)
             H = nudge @ H                            # the Shift / Scale nudge still applies
             self._warp = ("3d", K, roi, procam, nudge)
-            return Calibration(H, self.proj_size).warp(cam, roi)
-        self._warp = ("flat", self.calib.matrix((cam.shape[1], cam.shape[0])))
-        return self.calib.warp(cam, roi)
+            out = Calibration(H, self.proj_size).warp(cam, roi)
+        else:
+            H = self.calib.matrix((cam.shape[1], cam.shape[0]))
+            self._warp = ("flat", H)
+            out = self.calib.warp(cam, roi)
+        if edge is not None:
+            out = self._cut_edge(out, edge, H, s_feather)
+        return out
+
+    def _cut_edge(self, out, edge, H, feather):
+        """Keep only what is inside the scan's outline, drawn in projector
+        pixels (anti-aliased, softened by `feather` camera px): a crisp edge
+        where the camera's ~4 mm pixels, stretched onto the projector, had
+        left steps. The outline goes through the same forecast and mapping
+        as the image, so the two stay together."""
+        A = self._ahead_A
+        px = edge if A is None else edge @ A[:, :2].T + A[:, 2]
+        q = cv2.perspectiveTransform(px.reshape(-1, 1, 2).astype(np.float64), H)[:, 0]
+        h, w = out.shape[:2]
+        if not np.isfinite(q).all():
+            return out
+        x0, y0 = np.floor(q.min(0)).astype(int) - 8
+        x1, y1 = np.ceil(q.max(0)).astype(int) + 8
+        x0, y0, x1, y1 = max(x0, 0), max(y0, 0), min(x1, w), min(y1, h)
+        if x1 <= x0 or y1 <= y0:
+            out[:] = 0
+            return out
+        # in place: outside the outline's box nothing is kept
+        out[:y0] = 0
+        out[y1:] = 0
+        out[y0:y1, :x0] = 0
+        out[y0:y1, x1:] = 0
+        m = np.zeros((y1 - y0, x1 - x0), np.uint8)
+        cv2.fillPoly(m, [np.round((q - [x0, y0]) * 16).astype(np.int32)], 255, lineType=cv2.LINE_AA, shift=4)
+        if feather > 0:
+            # camera px -> projector px: the outline's length in each
+            scale = np.linalg.norm(np.diff(q, axis=0), axis=1).sum() / max(
+                1e-6, np.linalg.norm(np.diff(px, axis=0), axis=1).sum())
+            sig = max(0.5, 0.5 * feather * scale)
+            m = cv2.GaussianBlur(m, (0, 0), sig)
+            # pulled in so the softening stays inside the outline
+            m = (np.clip(m.astype(np.int16) * 2 - 255, 0, 255)).astype(np.uint8)
+        box = out[y0:y1, x0:x1]
+        cv2.multiply(box, cv2.merge([m, m, m]), box, scale=1 / 255)
+        return out
 
     def display_warp(self, motion, now):
         """Projector pixels -> projector pixels moving the image drawn for
