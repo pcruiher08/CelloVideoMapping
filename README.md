@@ -1,4 +1,15 @@
-# Cello Bow Tracker
+# Cello Video Mapping
+
+Projects TouchDesigner's visuals onto a played cello and sends TouchDesigner
+the cello's and the bow's movement over OSC, with a **Kinect v2** and a
+projector. **To install and run it, and for everything TouchDesigner receives,
+see [TOUCHDESIGNER.md](TOUCHDESIGNER.md)**; the ready-to-run zip is under
+[Releases](https://github.com/pcruiher08/CelloVideoMapping/releases).
+
+The rest of this file documents the parts in detail, starting with the
+original marker-based bow tracker (`bowtrack/`).
+
+## Cello Bow Tracker (orange tape markers, webcam)
 
 Real-time tracking of a cello bow's **x, y position and angle** from a webcam,
 using two **orange gaffer tape** markers on the bow. Shows a live overlay plus
@@ -244,18 +255,20 @@ TouchDesigner is on this Mac), port 9000 by default, for an **OSC In CHOP**:
 
 ### Moving the project to the TouchDesigner Mac
 
+Step by step, with everything TouchDesigner receives:
+**[TOUCHDESIGNER.md](TOUCHDESIGNER.md)**. In short: download the zip from
+[Releases](https://github.com/pcruiher08/CelloVideoMapping/releases), unzip,
+`bash show.sh`. To make a new release zip here:
+
 ```bash
-# here
 ./package.sh --live "syphon:TouchDesigner / visuales_cello" --osc 127.0.0.1
-# copy dist/cellotracking-*.zip over, then there:
-unzip cellotracking-*.zip && cd cellotracking-*
-./show.sh          # installs on first run (internet, a few minutes), then starts
+gh release create vYYYY.MM.DD dist/cellotracking-*.zip --notes-file TOUCHDESIGNER.md
 ```
 
-- The zip carries this rig's calibrations (projector, iPhone position, the
-  learned cello outline) and settings. They hold while the projector and
-  the iPhone stay put; otherwise press **Calibrate 3D** there (it also
-  relearns the outline, with the cello alone).
+- The zip carries this rig's calibrations (projector, camera position, the
+  cello's 3D scan and outline) and settings. They hold while the projector
+  and the Kinect stay put; otherwise press **Calibrate 3D** there (it also
+  rescans the cello, alone and still).
 - The projector's HDMI goes to that Mac, set to **extend**.
 - The Kinect plugs into that Mac (USB 3); `show.sh` uses it. With the iPhone
   instead (`SOURCE=lidar ./show.sh`), enter that Mac's address and port 8000
