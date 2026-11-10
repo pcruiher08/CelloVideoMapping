@@ -168,26 +168,37 @@ class CelloModel:
         self.t_ok = None                 # when the fit last succeeded
         self.t_s = None
         self.speed = 0.0                 # how fast the cello moves (m/s, smoothed)
+        self.vel = np.zeros(3)           # its velocity (m/s) and turning rate (rad/s), low-passed
+        self.wvel = np.zeros(3)
         self.ok = False
         self.stats = {}
 
-    def _smooth(self, M, t, min_cutoff=1.5, beta=30.0, lever=0.3):
+    def _smooth(self, M, t, min_cutoff=1.5, beta=20.0, d_cutoff=1.0, lever=0.3):
         """One Euro smoothing of the pose: the fit's own noise (~1-2 mm,
         a fraction of a degree) moved the drawn outline every frame, a
         quiver on a still cello. Cutoff rises with speed (m/s; rotation
         counted at `lever` m from the centre), so a moving cello is not
-        held back."""
+        held back. The speed is the smoothed pose's own, low-passed at
+        `d_cutoff` Hz: taken from each raw fit it was mostly fit noise
+        (~0.26 m/s on a cello played in place), which opened the filter
+        and left the jitter in."""
         if self.Ms is None or self.t_s is None or t - self.t_s > 0.5:
             self.Ms, self.t_s = M.copy(), t
             return self.Ms
         dt = max(t - self.t_s, 1e-3)
+
+        def alpha(cutoff):
+            return 1.0 / (1.0 + 1.0 / (2 * np.pi * cutoff * dt))
         D = M @ np.linalg.inv(self.Ms)
         w = cv2.Rodrigues(D[:3, :3])[0].ravel()
         tr = D[:3, 3]
-        speed = (np.linalg.norm(tr) + lever * np.linalg.norm(w)) / dt
-        self.speed = 0.7 * self.speed + 0.3 * speed       # m/s, for the light's motion inset
-        tau = 1.0 / (2 * np.pi * (min_cutoff + beta * speed))
-        a = 1.0 / (1.0 + tau / dt)
+        # velocities averaged as vectors: noise points every way and cancels
+        # (averaging its size, always positive, did not)
+        ad = alpha(d_cutoff)
+        self.vel += ad * (tr / dt - self.vel)
+        self.wvel += ad * (w / dt - self.wvel)
+        self.speed = float(np.linalg.norm(self.vel) + lever * np.linalg.norm(self.wvel))   # m/s
+        a = alpha(min_cutoff + beta * self.speed)
         self.Ms = rigid(rodrigues(a * w), a * tr) @ self.Ms
         self.t_s = t
         return self.Ms

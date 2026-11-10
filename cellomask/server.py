@@ -498,6 +498,7 @@ class Pipeline(threading.Thread):
         self.depth_only_share = 0.0    # fraction of frames tracked from depth alone (smoothed)
         self.scan_share = 0.0          # fraction of frames the scan fitted (smoothed)
         self.motion_extra = 0.0        # the edge's extra inset now (mm), from the cello's speed
+        self.pose_log = None           # debug: per-frame pose while /api/debug/poselog records
         self.seen = None               # the cello as segmented this frame (for learning)
         self.covered = 0.0             # fraction of the cello covered (hand, arm, bow)
         self.screens, self.screen_index = [], None   # displays, and the projector window's
@@ -827,6 +828,18 @@ class Pipeline(threading.Thread):
             if inst:
                 raw = self.pick_cello(inst, pkt, frame.shape, s) if s["instances"] == "largest" else \
                     np.max(np.stack([d["mask"] for d in inst]), 0)
+            # the scan locked on: the detection only confirms the cello is
+            # where the scan says, and the fit uses the same depth outline as
+            # on depth-only frames (fitting to the detection's outline every
+            # third frame tugged the light: 3x the jitter of the others)
+            if self.model.ok and Kf is not None and s["depth_shape"] == "scan" and raw is not None:
+                prev = self.model.render(self.model.M, Kf, frame.shape[1::-1])
+                if prev is not None and iou(raw, prev) > 0.3:
+                    try:
+                        raw = depth_refine(prev.astype(np.float32), pkt, Kf)
+                        depth_only = True        # filled from depth already, like those frames
+                    except Exception as e:
+                        print(f"depth-only: {e!r}")
         tick("replacement")
         seen = self.smoother(raw, frame.shape[:2])
         tick("pick + smooth")
@@ -899,7 +912,8 @@ class Pipeline(threading.Thread):
             try:
                 # moving fast, the light trails or overshoots for a moment:
                 # pull its edge in by more while it moves (fades over ~0.3 s)
-                want = min(12.0, s["motion_inset"] * self.model.speed)
+                # (not below 5 cm/s: played in place, it only made the edge pulse)
+                want = min(12.0, s["motion_inset"] * max(0.0, self.model.speed - 0.05))
                 self.motion_extra = max(want, self.motion_extra - 1.5)
                 inset = (s["inset_mm"] + round(self.motion_extra)) if s["surface"] == "front" else 0.0
                 whole = s["surface"] != "front"
@@ -907,6 +921,14 @@ class Pipeline(threading.Thread):
                 face = self.model.render_face(Kf, frame.shape[1::-1], inset, whole=whole, hold=True)
             except Exception as e:
                 print(f"scan face: {e!r}")
+        log = self.pose_log
+        if log is not None and len(log) < 2000:
+            m = self.model
+            log.append({"t": self.t_meas, "depth_only": bool(depth_only), "ok": bool(m.ok),
+                        "M": m.M.copy(), "Ms": None if m.Ms is None else m.Ms.copy(),
+                        "speed": float(m.speed), "extra": float(self.motion_extra),
+                        "in3d": m.stats.get("in3d"), "in2d": m.stats.get("in2d"),
+                        "edge_px": m.stats.get("edge_px"), "rms_mm": m.stats.get("rms_mm")})
         if face is not None:
             self.face_smoother.reset()
             tick("front face")
@@ -2179,6 +2201,18 @@ def build_app(pipe):
             sender.cancel()
             IPHONE.connected -= 1
 
+    @app.post("/api/debug/poselog")
+    def poselog(seconds: float = 8.0):
+        """Record the scan's pose every frame for `seconds` (calib_debug/poselog_<time>.npz)."""
+        import pickle
+        pipe.pose_log = []
+        time.sleep(min(seconds, 30.0))
+        log, pipe.pose_log = pipe.pose_log, None
+        path = os.path.join(pipe.debug_dir, f"poselog_{time.time():.0f}.pkl")
+        with open(path, "wb") as f:
+            pickle.dump(log, f)
+        return {"path": path, "frames": len(log)}
+
     @app.post("/api/projector/fit_edge")
     def projector_fit_edge():
         if not calib_lock.acquire(blocking=False):
@@ -2361,6 +2395,8 @@ def build_app(pipe):
 
 
 def main(argv=None):
+    import faulthandler
+    faulthandler.enable(all_threads=True)    # a native crash (GL, Kinect, OpenCV) prints every thread's stack
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--source", default="auto",
                    help="'auto' (built-in camera), camera index, part of a "
