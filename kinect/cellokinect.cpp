@@ -7,8 +7,12 @@
 // stdout: one "KV2H" message, then one "KV2F" message per frame, each
 //   4-byte tag, little-endian uint32 JSON length, JSON, payload.
 //   KV2H JSON: colour size and intrinsics, depth grid size, serial.
-//   KV2F JSON: seq, t (host time, s), locked; payload: colour BGR (w*h*3),
+//   KV2F JSON: seq, t (host time, s), locked, color (a new colour image
+//   follows); payload: colour BGR (w*h*3, only when "color" is true),
 //   depth uint16 mm (dw*dh, 0 = none), hits uint8 (dw*dh).
+// One message per depth frame (always 30 a second): the colour camera
+// drops to 15 fps in a dim room, and the depth-only tracking between
+// detections needs no new colour.
 // The image is un-mirrored (libfreenect2 delivers a mirror view), and the
 // depth is the Kinect's registered onto the colour image, kept as the
 // nearest reading in each BLOCK x BLOCK cell (the depth camera has ~1/9 of
@@ -93,9 +97,10 @@ int main(int argc, char **argv) {
         std::fprintf(stderr, "cellokinect: could not open the Kinect\n");
         return 3;
     }
-    libfreenect2::SyncMultiFrameListener listener(libfreenect2::Frame::Color | libfreenect2::Frame::Depth);
-    dev->setColorFrameListener(&listener);
-    dev->setIrAndDepthFrameListener(&listener);
+    libfreenect2::SyncMultiFrameListener color_listener(libfreenect2::Frame::Color);
+    libfreenect2::SyncMultiFrameListener depth_listener(libfreenect2::Frame::Depth);
+    dev->setColorFrameListener(&color_listener);
+    dev->setIrAndDepthFrameListener(&depth_listener);
     if (!dev->start()) {
         std::fprintf(stderr, "cellokinect: could not start the Kinect\n");
         return 4;
@@ -103,6 +108,7 @@ int main(int argc, char **argv) {
     libfreenect2::Freenect2Device::ColorCameraParams cp = dev->getColorCameraParams();
     libfreenect2::Registration reg(dev->getIrCameraParams(), cp);
     libfreenect2::Frame undistorted(512, 424, 4), registered(512, 424, 4), bigdepth(1920, 1082, 4);
+    libfreenect2::Frame last_color(1920, 1080, 4);   // registration needs a colour frame; its pixels do not matter
 
     const int W = 1920, H = 1080, DW = W / BLOCK, DH = H / BLOCK;
     char hd[512];
@@ -144,32 +150,42 @@ int main(int argc, char **argv) {
     std::vector<uint8_t> bgr(size_t(W) * H * 3);
     std::vector<uint16_t> depth(size_t(DW) * DH);
     std::vector<uint8_t> hits(size_t(DW) * DH);
-    libfreenect2::FrameMap frames;
-    bool locked = false;
+    libfreenect2::FrameMap frames, cframes;
+    bool locked = false, have_color = false;
     unsigned long seq = 0;
 
     while (running) {
-        if (!listener.waitForNewFrame(frames, 2000)) {
+        if (!depth_listener.waitForNewFrame(frames, 2000)) {
             std::fprintf(stderr, "cellokinect: no frames for 2 s\n");
             continue;
         }
         double t = now_s();
-        libfreenect2::Frame *rgb = frames[libfreenect2::Frame::Color];
-        libfreenect2::Frame *dep = frames[libfreenect2::Frame::Depth];
-        reg.apply(rgb, dep, &undistorted, &registered, true, &bigdepth);
-        // colour: BGRX (or RGBX), mirrored -> BGR, upright
-        const uint8_t *src = rgb->data;
-        bool rgbx = rgb->format == libfreenect2::Frame::RGBX;
-        for (int y = 0; y < H; ++y) {
-            const uint8_t *s = src + size_t(y) * W * 4;
-            uint8_t *d = bgr.data() + size_t(y) * W * 3;
-            for (int x = 0; x < W; ++x) {
-                const uint8_t *p = s + size_t(W - 1 - x) * 4;
-                d[3 * x] = rgbx ? p[2] : p[0];
-                d[3 * x + 1] = p[1];
-                d[3 * x + 2] = rgbx ? p[0] : p[2];
+        bool new_color = false;
+        if (color_listener.hasNewFrame() && color_listener.waitForNewFrame(cframes, 0)) {
+            // colour: BGRX (or RGBX), mirrored -> BGR, upright
+            libfreenect2::Frame *rgb = cframes[libfreenect2::Frame::Color];
+            const uint8_t *src = rgb->data;
+            bool rgbx = rgb->format == libfreenect2::Frame::RGBX;
+            for (int y = 0; y < H; ++y) {
+                const uint8_t *s = src + size_t(y) * W * 4;
+                uint8_t *d = bgr.data() + size_t(y) * W * 3;
+                for (int x = 0; x < W; ++x) {
+                    const uint8_t *p = s + size_t(W - 1 - x) * 4;
+                    d[3 * x] = rgbx ? p[2] : p[0];
+                    d[3 * x + 1] = p[1];
+                    d[3 * x + 2] = rgbx ? p[0] : p[2];
+                }
             }
+            last_color.format = rgb->format;
+            color_listener.release(cframes);
+            new_color = have_color = true;
         }
+        if (!have_color) {                        // nothing to register onto yet
+            depth_listener.release(frames);
+            continue;
+        }
+        libfreenect2::Frame *dep = frames[libfreenect2::Frame::Depth];
+        reg.apply(&last_color, dep, &undistorted, &registered, true, &bigdepth);
         // depth: rows 1..1080 of bigdepth line up with the colour rows
         const float *bd = reinterpret_cast<const float *>(bigdepth.data) + W;
         for (int by = 0; by < DH; ++by)
@@ -188,7 +204,7 @@ int main(int argc, char **argv) {
                 depth[i] = n ? uint16_t(std::min(best, 65535.f)) : 0;
                 hits[i] = uint8_t(n);
             }
-        listener.release(frames);
+        depth_listener.release(frames);
 
         int req = lock_request.exchange(-1);
         if (req == 1 && !locked) {
@@ -206,11 +222,13 @@ int main(int argc, char **argv) {
             locked = false;
         }
 
-        char fj[128];
-        std::snprintf(fj, sizeof fj, "{\"seq\":%lu,\"t\":%.6f,\"locked\":%s}", seq++, t,
-                      locked ? "true" : "false");
-        if (!send("KV2F", fj, {bgr.data(), depth.data(), hits.data()},
-                  {bgr.size(), depth.size() * 2, hits.size()}))
+        char fj[160];
+        std::snprintf(fj, sizeof fj, "{\"seq\":%lu,\"t\":%.6f,\"locked\":%s,\"color\":%s}", seq++, t,
+                      locked ? "true" : "false", new_color ? "true" : "false");
+        bool sent = new_color ? send("KV2F", fj, {bgr.data(), depth.data(), hits.data()},
+                                     {bgr.size(), depth.size() * 2, hits.size()})
+                              : send("KV2F", fj, {depth.data(), hits.data()}, {depth.size() * 2, hits.size()});
+        if (!sent)
             break;
         last_frame = now_s();
     }

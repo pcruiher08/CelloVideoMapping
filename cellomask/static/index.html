@@ -152,6 +152,9 @@
       <p class="hint">Front face (3D only): no light on the neck, scroll, a hand or the bow in front of the top, and the edge pulled in so none reaches the ribs or the wall. Learned shape: the light uses the cello's own outline, fitted to the visible edges, so hands, knees or the bow cannot change it. Hands: painting over keeps the cello's whole shape lit while a hand, an arm or the bow covers part of it; leaving them dark cuts what is in front out of the light. Predict ahead: the light reaches the cello ~350 ms after the phone sees it; the mapping is moved to where the cello will be by then (0 = off; less overshoots less when the player stops suddenly).</p>
       <button class="btn" id="calibrate3d" style="width:100%">Calibrate 3D (Kinect / iPhone depth, ~25 s)</button>
       <p class="hint">Needs a depth source: the Kinect v2, or the iPhone LiDAR (CelloDepth app → Connect), mounted rigidly beside the projector. Solves the projector's lens and position in 3D from the stripes plus depth; the lit area must include different depths (cello in front of the wall, some floor). Also refits the flat mapping above.</p>
+      <button class="btn" id="autoAlign" style="width:100%;margin-top:8px">Auto-align the light (cello still, ~5 s)</button>
+      <p class="sub" id="alignStatus" style="margin:4px 0 0"></p>
+      <p class="hint">Lights the cello white, sees where the light lands, and shifts it onto the cello (Shift X/Y). Fixes what the calibration leaves at the cello's spot, or the camera being knocked slightly.</p>
       <img id="calibView" alt="What the camera saw when calibrating" hidden style="width:100%;margin-top:8px;border-radius:8px;border:1px solid var(--line)">
       <div class="seg" id="projModeSeg" style="margin-top:10px">
         <button data-v="content">Content</button>
@@ -503,6 +506,15 @@ async function calibrate(method) {
 }
 $('#calibrate').addEventListener('click', () => calibrate('structured'));
 $('#calibrate3d').addEventListener('click', () => calibrate('lidar'));
+$('#autoAlign').addEventListener('click', async () => {
+  const b = $('#autoAlign'); b.disabled = true; $('#alignStatus').textContent = 'aligning…';
+  try {
+    const r = await fetch('/api/projector/align', { method: 'POST' });
+    const j = await r.json();
+    $('#alignStatus').innerHTML = j.ok ? `<span class="in">Aligned</span>: ${esc(j.message)}` : `<span class="near">${esc(j.message || j.detail || 'failed')}</span>`;
+  } catch (e) { $('#alignStatus').textContent = 'failed: ' + e; }
+  b.disabled = false;
+});
 $('#calibMarkers').addEventListener('click', e => { e.preventDefault(); calibrate('markers'); });
 $('#liveScan').addEventListener('click', async () => {
   const b = $('#liveScan'); b.disabled = true; b.textContent = 'Looking…';

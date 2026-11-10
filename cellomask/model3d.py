@@ -164,6 +164,7 @@ class CelloModel:
     def reset(self):
         self.M = np.eye(4)
         self.Ms = None                   # M smoothed (what is drawn), see _smooth
+        self.lost_R = None               # rotation when last tracked: where to start when lost
         self.t_s = None
         self.ok = False
         self.stats = {}
@@ -200,7 +201,127 @@ class CelloModel:
         self.S, self.O = np.asarray(S, np.float64), np.asarray(O, np.float64)
         self.C0, self.n0 = np.asarray(C, np.float64), np.asarray(n, np.float64)
         self.size = size
+        self.faces = {}                  # (inset mm, whole) -> outline to light (3D, scan frame)
+        try:
+            self._clean_shape()
+        except Exception as e:           # keep the traced outline
+            print(f"cello scan: outline not cleaned ({e!r})")
+            self.shape2d = None
         self.reset()
+
+    # --- the clean shape -------------------------------------------------------
+
+    RES = 0.002                          # m per pixel of the flat shape
+
+    def _clean_shape(self, smooth_mm=6.0):
+        """The traced outline made into the cello's clean shape, once: laid
+        flat in its own plane, made left-right symmetric (averaged with its
+        mirror image about the best centre line; the segmentation's outline
+        had bumps the instrument does not) and smoothed. The light is then
+        this fixed shape moved into place every frame: no frame-to-frame
+        re-cutting, no ragged edge. self.O becomes the clean outline."""
+        n = self.n0 / np.linalg.norm(self.n0)
+        Cr = self.O.mean(0)
+        Q = self.O - Cr
+        Q -= np.outer(Q @ n, n)                      # in the plane
+        ev = np.linalg.eigh(Q.T @ Q)[1]
+        v = ev[:, -1]                                # along the cello
+        pv = Q @ v
+        if pv.max() < -pv.min():                     # +v towards the scroll (the far, narrow end)
+            v = -v
+        u = np.cross(v, n)
+        u /= np.linalg.norm(u)
+        q = np.c_[Q @ u, Q @ v]
+        r = self.RES
+        pad = 0.05
+        lo = q.min(0) - pad
+        size = np.ceil((q.max(0) + pad - lo) / r).astype(int)
+        m = np.zeros((size[1], size[0]), np.uint8)
+        cv2.fillPoly(m, [np.round((q - lo) / r * 4).astype(np.int32)], 1, lineType=cv2.LINE_8, shift=2)
+
+        # the mirror line: the column (and slight tilt) the shape is most symmetric about
+        h, w = m.shape
+        best = None
+        for ang in np.radians(np.arange(-4, 4.5, 1.0)):
+            R = cv2.getRotationMatrix2D((w / 2, h / 2), np.degrees(ang), 1.0)
+            mr = cv2.warpAffine(m, R, (w, h), flags=cv2.INTER_NEAREST)
+            xs = np.nonzero(mr.any(0))[0]
+            for cx in np.arange(xs.mean() - 15, xs.mean() + 15.5, 1.0):
+                f = cv2.warpAffine(mr, np.float32([[-1, 0, 2 * cx], [0, 1, 0]]), (w, h), flags=cv2.INTER_NEAREST)
+                sc = (f & mr).sum() / max(1, (f | mr).sum())
+                if best is None or sc > best[0]:
+                    best = (sc, ang, cx)
+        sym, ang, cx = best
+        R = cv2.getRotationMatrix2D((w / 2, h / 2), np.degrees(ang), 1.0)
+        Rinv = cv2.invertAffineTransform(R)
+        mr = cv2.warpAffine(m.astype(np.float32), R, (w, h))
+        mf = cv2.warpAffine(mr, np.float32([[-1, 0, 2 * cx], [0, 1, 0]]), (w, h))
+        k = int(2 * round(3 * smooth_mm / 1000 / r) + 1)
+        clean = cv2.GaussianBlur((mr + mf) / 2, (k, k), smooth_mm / 1000 / r) > 0.5
+        clean = cv2.warpAffine(clean.astype(np.uint8), Rinv, (w, h), flags=cv2.INTER_NEAREST)
+        # the body alone (no neck or scroll): what an opening with a disc of
+        # 14 cm leaves, plus the parts it removed that are off the centre line
+        rr = int(round(0.07 / r))
+        opened = cv2.morphologyEx(clean, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * rr + 1,) * 2))
+        rest = clean & (1 - opened)
+        nl, lab, stats, cents = cv2.connectedComponentsWithStats(rest, connectivity=8)
+        body = clean.copy()
+        axis_x = (Rinv @ np.array([cx, h / 2, 1.0]))[0]   # the centre line, in the flat shape
+        for i in range(1, nl):
+            on_axis = abs(cents[i][0] - axis_x) < 0.06 / r
+            high = cents[i][1] * r + lo[1] > 0.0         # towards the scroll (+v)
+            if stats[i, cv2.CC_STAT_AREA] * r * r > 0.003 and high and on_axis:
+                cut = cv2.dilate((lab == i).astype(np.uint8), np.ones((3, 3), np.uint8)) & (1 - opened)
+                body &= 1 - cut
+        self.shape2d = {"clean": clean, "body": body, "lo": lo, "Cr": Cr, "u": u, "v": v, "n": n,
+                        "symmetry": float(sym)}
+        self.O = self._outline3d(clean)
+
+    def _outline3d(self, m):
+        """The largest outline of a flat-shape mask, as 3D points on the rim plane."""
+        sh = self.shape2d
+        cnts, _ = cv2.findContours(m.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+        c = max(cnts, key=cv2.contourArea)[:, 0, :].astype(np.float64)
+        # smoothed along its length: the grid's stair-steps (2 mm) showed
+        # as a jagged edge in the light
+        k = np.exp(-0.5 * (np.arange(-9, 10) / 3.0) ** 2)
+        k /= k.sum()
+        c = np.stack([np.convolve(np.r_[c[-9:, i], c[:, i], c[:9, i]], k, "valid") for i in range(2)], 1)
+        c = c[::max(1, len(c) // 600)]
+        lo, Cr, u, v = sh["lo"], sh["Cr"], sh["u"], sh["v"]
+        xy = (c + 0.5) * self.RES + lo
+        return Cr + np.outer(xy[:, 0], u) + np.outer(xy[:, 1], v)
+
+    def face(self, inset_mm, whole=False):
+        """The outline to light (3D, scan frame): the body without neck and
+        scroll (or the whole cello), pulled in by `inset_mm`. Built once per
+        setting."""
+        key = (round(float(inset_mm), 1), bool(whole))
+        if key not in self.faces:
+            sh = self.shape2d
+            if sh is None:
+                return self.O
+            m = sh["clean"] if whole else sh["body"]
+            k = int(round(inset_mm / 1000 / self.RES))
+            if k > 0:
+                m = cv2.erode(m, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * k + 1,) * 2))
+            self.faces[key] = self._outline3d(m)
+        return self.faces[key]
+
+    def render_face(self, K, size, inset_mm, whole=False):
+        """The light's shape this frame: the clean (body or whole) outline at
+        the smoothed pose, with anti-aliased edges (float 0..1, frame size)."""
+        if not self.ok:
+            return None
+        M = self.M if self.Ms is None else self.Ms
+        o = self.face(inset_mm, whole) @ M[:3, :3].T + M[:3, 3]
+        if (o[:, 2] < 0.1).any():
+            return None
+        w, h = size
+        px = np.c_[o[:, 0] / o[:, 2] * K[0, 0] + K[0, 2], o[:, 1] / o[:, 2] * K[1, 1] + K[1, 2]]
+        out = np.zeros((h, w), np.uint8)
+        cv2.fillPoly(out, [np.round(px * 16).astype(np.int32)], 255, lineType=cv2.LINE_AA, shift=4)
+        return out.astype(np.float32) / 255.0
 
     @property
     def learned(self):
@@ -323,16 +444,23 @@ class CelloModel:
         near[lab[ey, ex]] = np.c_[(ex + 0.5) * half[2] - 0.5 + half[0], (ey + 0.5) * half[3] - 0.5 + half[1]]
 
         if self.ok:
-            M = self.M
+            starts = [self.M]
             iters, g3s, g2s = 6, (0.02, 0.008), (12.0, 5.0)    # from last frame's pose: close already
         else:
-            # from scratch: the scan as learned, moved onto the visible cello
+            # lost: the scan moved onto the visible cello, turned as when it
+            # was last tracked (the player holds it at their own angle, not
+            # the stand's it was scanned at), else as when it was scanned
             cl = P[np.isfinite(P).all(-1) & vd].mean(0) if (vd & region).sum() > 50 else None
             if cl is None:
                 return None
-            M = rigid(np.eye(3), cl - self.S.mean(0))
+            starts = []
+            for R in ([self.lost_R] if self.lost_R is not None else []) + [np.eye(3)]:
+                starts.append(rigid(R, cl - self.S.mean(0) @ R.T))
             iters, g3s, g2s = 30, (0.15, 0.05, 0.015, 0.008), (80.0, 30.0, 12.0, 5.0)
-        M, st = self._fit(M, P, N, Kd, near, lab, half, K, iters, g3s, g2s)
+        for M in starts:
+            M, st = self._fit(M, P, N, Kd, near, lab, half, K, iters, g3s, g2s)
+            if st is not None and st["in3d"] > 0.3 and st["in2d"] > 0.3 and st["rms_mm"] < 12:
+                break
         out = None
         if st is not None and st["in3d"] > 0.3 and st["in2d"] > 0.3 and st["rms_mm"] < 12:
             out = self.render(M, K, (w, h))
@@ -345,7 +473,10 @@ class CelloModel:
         if out is None:
             self.ok = False
             return None
+        if not self.ok:
+            self.Ms = None                   # found again: do not glide over from where it was lost
         self.M, self.ok = M, True
+        self.lost_R = M[:3, :3]
         Ms = self._smooth(M, time.time())
         if Ms is not M:
             out = self.render(Ms, K, (w, h))

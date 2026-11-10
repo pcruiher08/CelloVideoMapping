@@ -59,6 +59,8 @@ class KinectSource:
         self.fps = 0.0
         self.error = None
         self.proc = None
+        self._bgr = None                   # the last colour image (raw bytes)
+        self._color = (None, None)         # (raw bytes, decoded at the processing width): decode once
         self.running = True
         # what the iPhone source also has, for the status and latency code
         self.connected = 0
@@ -122,7 +124,12 @@ class KinectSource:
             tag, hd = self._message(f)
             if tag != b"KV2F":
                 raise ValueError(f"unexpected Kinect helper output {tag!r}")
-            bgr = self._exact(f, w * h * 3)
+            # colour only when the camera has a new image (it drops to 15 fps
+            # in a dim room; depth always comes at 30): reuse the last one
+            if hd.get("color", True):
+                self._bgr = self._exact(f, w * h * 3)
+            bgr = self._bgr
+            hd["new_color"] = hd.get("color", True)
             depth = self._exact(f, dw * dh * 2)
             hits = self._exact(f, dw * dh)
             now = time.time()
@@ -174,21 +181,29 @@ class KinectSource:
         hd, bgr, depth, hits = item
         info = self.info
         w, h, dw, dh = info["w"], info["h"], info["dw"], info["dh"]
-        img = np.frombuffer(bgr, np.uint8).reshape(h, w, 3)
+        img = None
+        if self._color[0] is bgr:                # the same colour image as last time
+            img = self._color[1]
         K = np.array([[info["fx"], 0, info["cx"]], [0, info["fy"], info["cy"]], [0, 0, 1]], np.float64)
         if self.width and w > self.width:
             s = self.width / w
             nw, nh = self.width, int(round(h * s))
-            img = cv2.resize(img, (nw, nh), interpolation=cv2.INTER_AREA)
+            if img is None:
+                img = cv2.resize(np.frombuffer(bgr, np.uint8).reshape(h, w, 3), (nw, nh),
+                                 interpolation=cv2.INTER_AREA)
             K[:2] *= s
             K[0, 2] = (info["cx"] + 0.5) * s - 0.5     # pixel centres, not corners
             K[1, 2] = (info["cy"] + 0.5) * s - 0.5
             w, h = nw, nh
+        elif img is None:
+            img = np.frombuffer(bgr, np.uint8).reshape(h, w, 3)
+        self._color = (bgr, img)
         mm = np.frombuffer(depth, np.uint16).reshape(dh, dw)
         conf = confidence(mm, np.frombuffer(hits, np.uint8).reshape(dh, dw))
         d = np.where(mm > 0, mm.astype(np.float32) / 1000.0, np.nan).astype(np.float32)
         return {"bgr": img, "depth": d, "conf": conf, "K": K, "size": (w, h),
                 "ts": hd["t"], "orientation": "kinect", "locked": hd.get("locked"),
+                "new_color": hd.get("new_color", True),
                 "t_recv": hd["t_recv"], "t_cap_mac": hd["t"]}
 
     def read(self, timeout=1.0):

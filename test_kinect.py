@@ -40,7 +40,11 @@ def stream(frames=3):
         mm[60:210, 180:300] = 1200                        # a box at 1.2 m in front of it
         mm[:, :40] = 0                                    # the depth camera's narrower view
         hits = np.where(mm > 0, 3, 0).astype(np.uint8)
-        out.append(message(b"KV2F", {"seq": k, "t": time.time(), "locked": False}, bgr, mm, hits))
+        if k == frames - 1:                               # depth only: the colour camera had nothing new
+            out.append(message(b"KV2F", {"seq": k, "t": time.time(), "locked": False, "color": False}, mm, hits))
+        else:
+            out.append(message(b"KV2F", {"seq": k, "t": time.time(), "locked": False, "color": True},
+                               bgr, mm, hits))
     return io.BytesIO(b"".join(out))
 
 
@@ -54,6 +58,7 @@ def offline():
     ok, img = k.read(timeout=0.1)
     pkt = k.current
     assert ok and img.shape == (720, 1280, 3), img.shape
+    assert pkt["new_color"] is False, "the last frame came without colour"
     assert tuple(img[10, 10]) == (200, 60, 20) and tuple(img[10, 1270]) == (0, 0, 0)
     K = pkt["K"]
     assert abs(K[0, 0] - 1081.37 * 2 / 3) < 0.01 and abs(K[0, 2] - 639.5) < 0.01 and abs(K[1, 2] - 359.5) < 0.01, K
@@ -62,7 +67,8 @@ def offline():
     assert abs(d[100, 250] - 1.2) < 1e-6 and abs(d[20, 400] - 2.5) < 1e-6
     assert c[100, 250] == 2 and c[20, 400] == 2
     assert c[60, 250] == 1 and c[100, 180] == 1, "the box's outline must not count as solid"
-    print("offline: packet ok (1280x720, K scaled, depth in m, NaN + conf 0 outside, edges conf 1)")
+    print("offline: packet ok (1280x720, K scaled, depth in m, NaN + conf 0 outside, edges conf 1, "
+          "a depth-only frame reuses the last colour)")
 
 
 def live(seconds=5):

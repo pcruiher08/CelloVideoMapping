@@ -71,7 +71,8 @@ DEFAULTS = {
     "depth_shape": "scan",   # scan (the learned 3D scan, fitted; flood fill when it is lost) | fill | off
     "osc_host": "",          # TouchDesigner's address for the cello's state over OSC ("" = off)
     "osc_port": 9000,
-    "display_warp": True,    # move the light at the display's 60 Hz between tracked frames
+    "display_warp": True,
+    "yolo_every": 3,         # with the scan locked on, detect on 1 frame in this many; depth alone between (1 = every frame)    # move the light at the display's 60 Hz between tracked frames
     "predict_ms": 250,       # draw the cello this far ahead of its capture (0 = off); the light lags ~350 ms
 }
 
@@ -338,6 +339,41 @@ def largest_cello(inst, overlap=0.3):
     return cello_candidates(inst, overlap)[0]
 
 
+def best_shift(lit, target, reach=60):
+    """(dx, dy) camera pixels to move `lit` by so it sits centred in
+    `target`, searched within +-reach: coarse at half size, then fine. The
+    score is each lit pixel's depth inside the target (distance to its
+    edge), minus a penalty for light outside: plain overlap is flat while
+    an inset light fits anywhere inside, and this peaks with it centred."""
+    ys, xs = np.nonzero(target)
+    if len(xs) < 100:
+        return None
+    pad = reach + 4
+    h, w = target.shape
+    x0, y0 = max(0, xs.min() - pad), max(0, ys.min() - pad)
+    x1, y1 = min(w, xs.max() + pad), min(h, ys.max() + pad)
+    L = lit[y0:y1, x0:x1].astype(np.float32)
+    T = target[y0:y1, x0:x1] > 0
+
+    def scorer(Ts):
+        inside = cv2.distanceTransform(Ts.astype(np.uint8), cv2.DIST_L2, 5)
+        val = np.where(Ts, np.minimum(inside, 40.0), -20.0).astype(np.float32)
+
+        def score(dx, dy, Ls):
+            m = cv2.warpAffine(Ls, np.float32([[1, 0, dx], [0, 1, dy]]), Ts.shape[::-1])
+            return float((m * val).sum())
+        return score
+
+    Lh = cv2.resize(L, None, fx=0.5, fy=0.5)
+    Th = cv2.resize(T.astype(np.uint8), None, fx=0.5, fy=0.5) > 0
+    sh, sf = scorer(Th), scorer(T)
+    r = reach // 2
+    best = max((sh(dx, dy, Lh), dx, dy) for dx in range(-r, r + 1) for dy in range(-r, r + 1))
+    cx, cy = 2 * best[1], 2 * best[2]
+    best = max((sf(dx, dy, L), dx, dy) for dx in range(cx - 3, cx + 4) for dy in range(cy - 3, cy + 4))
+    return np.array([best[1], best[2]], np.float64)
+
+
 def same_view(a, b):
     """Two image sizes of the same camera view: equal, or one scaled (the
     3D calibration and the scan are in metres, so tracking can run at a
@@ -457,6 +493,8 @@ class Pipeline(threading.Thread):
         self.model = CelloModel()      # the cello scanned in 3D (Calibrate 3D / Learn), fitted each frame
         self.cello_prev = None         # the detection picked as the cello last frame
         self.steps = {}                # ms per step of render (smoothed)
+        self.depth_only_run = 0        # depth-only frames since the last detection
+        self.depth_only_share = 0.0    # fraction of frames tracked from depth alone (smoothed)
         self.seen = None               # the cello as segmented this frame (for learning)
         self.covered = 0.0             # fraction of the cello covered (hand, arm, bow)
         self.screens, self.screen_index = [], None   # displays, and the projector window's
@@ -654,12 +692,27 @@ class Pipeline(threading.Thread):
                                    interpolation=cv2.INTER_AREA)
             if s["flip"]:
                 frame = cv2.flip(frame, 1)
-            try:
-                inst = self.seg(frame, conf=s["conf"])
-            except Exception as e:           # keep streaming even if a frame fails
-                self.error = repr(e)
-                inst = []
-            pkt = getattr(self.camera, "current", None)   # depth + intrinsics, iPhone only
+            pkt = getattr(self.camera, "current", None)   # depth + intrinsics (iPhone, Kinect)
+            # depth-only frames: while the 3D scan is locked on, detection
+            # runs on one frame in `yolo_every` only; in between, the scan
+            # follows the depth alone (render, inst None). Detection was
+            # ~25 ms of every frame's delay and held the frame rate down
+            # (a frame carrying no new colour image, as the Kinect sends in a
+            # dim room, is not worth detecting on either)
+            stale = pkt is not None and pkt.get("new_color") is False
+            depth_only = (s["yolo_every"] > 1 and pkt is not None and self.model.ok
+                          and s["depth_shape"] == "scan"
+                          and (self.depth_only_run < s["yolo_every"] - 1 or stale))
+            if depth_only:
+                inst = None
+                self.depth_only_run += 1
+            else:
+                self.depth_only_run = 0
+                try:
+                    inst = self.seg(frame, conf=s["conf"])
+                except Exception as e:           # keep streaming even if a frame fails
+                    self.error = repr(e)
+                    inst = []
             with self.seg_cond:
                 self.seg_out = (frame, inst, s, pkt)
                 self.seg_cond.notify_all()
@@ -676,10 +729,35 @@ class Pipeline(threading.Thread):
                 continue
             mask = self.smoother.mask
             try:
-                if self.phone.update(pkt, exclude=None if mask is None else mask > 0.5):
+                exclude = None if mask is None else mask > 0.5
+                near = self._near_cello(pkt, exclude)
+                if near is not None:
+                    exclude = near
+                if self.phone.update(pkt, exclude=exclude):
                     self.procam_live = pc.moved(self.phone.M)
             except Exception as e:           # never stop the show over this
                 print(f"relocate: {e!r}")
+
+    def _near_cello(self, pkt, mask, radius=1.0):
+        """Everything within `radius` m of the cello (the player, the chair,
+        the stand), as an image-size mask, for the camera relocation to
+        leave out: a seated player in front of the room pulled its estimate
+        ~2 cm, which shifted the light by about as much. None without a plane."""
+        C = self.plane.C
+        if C is None or mask is None:
+            return None
+        depth = pkt["depth"]
+        dh, dw = depth.shape
+        h, w = mask.shape
+        K = self.frame_K(pkt, mask.shape)
+        if K is None:
+            return None
+        v, u = np.mgrid[0:dh, 0:dw]
+        x = ((u + 0.5) * w / dw - 0.5 - K[0, 2]) * depth / K[0, 0]
+        y = ((v + 0.5) * h / dh - 0.5 - K[1, 2]) * depth / K[1, 1]
+        near = np.isfinite(depth) & ((x - C[0]) ** 2 + (y - C[1]) ** 2 + (depth - C[2]) ** 2 < radius ** 2)
+        near = cv2.resize(near.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST) > 0
+        return near | mask
 
     def run(self):
         """Stage 2: smoothing, orientation, the projector frame and the
@@ -724,18 +802,32 @@ class Pipeline(threading.Thread):
             with self.lock:
                 repl = repl_media.frame() if repl_media else None
 
-        self.n_instances = len(inst)
+        depth_only = inst is None
+        self.depth_only_share = 0.95 * self.depth_only_share + 0.05 * depth_only
+        Kf = self.frame_K(pkt, frame.shape)
         raw = None
-        if inst:
-            raw = self.pick_cello(inst, pkt, frame.shape, s) if s["instances"] == "largest" else \
-                np.max(np.stack([d["mask"] for d in inst]), 0)
+        if depth_only:
+            # no detection this frame: the visible cello from the depth
+            # alone, grown from where the scan was (the fill follows the
+            # surface to its edge, so a few cm of motion is caught)
+            if Kf is not None and self.model.ok:
+                prev = self.model.render(self.model.M, Kf, frame.shape[1::-1])
+                if prev is not None:
+                    try:
+                        raw = depth_refine(prev.astype(np.float32), pkt, Kf)
+                    except Exception as e:
+                        print(f"depth-only: {e!r}")
+        else:
+            self.n_instances = len(inst)
+            if inst:
+                raw = self.pick_cello(inst, pkt, frame.shape, s) if s["instances"] == "largest" else \
+                    np.max(np.stack([d["mask"] for d in inst]), 0)
         tick("replacement")
         seen = self.smoother(raw, frame.shape[:2])
         tick("pick + smooth")
         # depth: the visible cello's edge from the depth, then the 3D scan fitted to it
-        Kf = self.frame_K(pkt, frame.shape)
         use_depth = seen is not None and Kf is not None and s["depth_shape"] != "off"
-        if use_depth:
+        if use_depth and not depth_only:      # depth-only frames are depth-filled already
             try:
                 seen = depth_refine(seen, pkt, Kf)
             except Exception as e:           # never lose the mask over this
@@ -787,24 +879,39 @@ class Pipeline(threading.Thread):
         if not self.pose_pred.update(mask, self.t_meas) and mask is None:
             self.pose_pred.reset()
         # what gets light: the front face when depth allows, else the mask
-        face = self.front_mask(mask, pkt, s)
-        tick("front face")
+        face = None
+        if scanned is not None and s["hands"] == "paint":
+            # the scan's clean shape (body, or whole), moved into place: no
+            # per-frame re-cutting, so a smooth, steady edge
+            try:
+                face = self.model.render_face(Kf, frame.shape[1::-1],
+                                              s["inset_mm"] if s["surface"] == "front" else 0.0,
+                                              whole=s["surface"] != "front")
+            except Exception as e:
+                print(f"scan face: {e!r}")
         if face is not None:
-            face = self.face_smoother(face, frame.shape[:2])
-        else:
             self.face_smoother.reset()
+            tick("front face")
+        else:
+            face = self.front_mask(mask, pkt, s)
+            tick("front face")
+            if face is not None:
+                face = self.face_smoother(face, frame.shape[:2])
+            else:
+                self.face_smoother.reset()
         self.face = face
         tick("face smooth")
         rec = self.recording
         if rec is not None and len(rec["frames"]) < rec["n"]:
             q = lambda a: None if a is None else (a[::2, ::2] > 0.5)
             rec["frames"].append({"t": self.t_meas, "raw": q(raw), "seen": q(seen), "whole": q(mask),
-                                  "face": q(face), "n_inst": len(inst), "covered": self.covered,
+                                  "face": q(face), "n_inst": -1 if inst is None else len(inst), "covered": self.covered,
                                   "axis": None if axis is None else np.array(axis),
                                   "proj": None})
             rec["proj_next"] = True
         self.raw_frame = frame
-        self.raw_seq += 1
+        if pkt is None or pkt.get("new_color", True):
+            self.raw_seq += 1          # calibration waits on this: only a new camera image counts
         tick("record")
         if self.projector_window or self.watched("projector"):
             try:
@@ -849,7 +956,7 @@ class Pipeline(threading.Thread):
                             opacity=s["opacity"], blend=s["blend"], background=bg, quad=quad)
             jo = cv2.imencode(".jpg", out, [cv2.IMWRITE_JPEG_QUALITY, 85])[1].tobytes()
         # the mask view is only drawn and encoded while someone watches it
-        dbg = debug_overlay(frame, inst, mask, axis) if self.watched("debug") else None
+        dbg = debug_overlay(frame, inst or [], mask, axis) if self.watched("debug") else None
         tick("output view")
 
         dt = now - self.t_prev
@@ -1475,6 +1582,7 @@ class Pipeline(threading.Thread):
                          **{k: round(float(v), 2) for k, v in self.model.stats.items()}},
                 "latency": self.latency_state(),
                 "steps_ms": {k: round(v, 1) for k, v in self.steps.items()},
+                "depth_only": round(100 * self.depth_only_share),
                 "phone": self.phone_state(),
                 "kinect": self.depthcam_state(),
                 "iphone": {"live": IPHONE.live, "fps": round(IPHONE.fps, 1),
@@ -1571,7 +1679,78 @@ class Pipeline(threading.Thread):
         os.makedirs(self.debug_dir, exist_ok=True)
         cv2.imwrite(os.path.join(self.debug_dir, "spill.jpg"), vis)
         np.savez_compressed(os.path.join(self.debug_dir, "spill.npz"), mask=mask, diff=diff, dark=dark)
+        self._spill = (face, lit)
         return res
+
+    def auto_align(self, rounds=2, reach=60):
+        """Closed loop: light the cello white, see where the light lands in
+        the camera, and shift the projector image (the Shift X/Y nudge) so
+        it lands on the cello. Takes up what the calibration leaves at the
+        cello's own spot (a few mm to a few cm: the camera knocked, a fit
+        less good there). The cello must be still."""
+        if self.calib is None:
+            return {"ok": False, "message": "calibrate first"}
+        before = after = None
+        moved = np.zeros(2)
+        for _ in range(rounds):
+            r = self.measure_spill()
+            if not r.get("ok"):
+                return r
+            if before is None:
+                before = r
+            face, lit = self._spill
+            if lit.sum() < 200:
+                return {"ok": False, "message": "the light is not seen on the cello (is it in the light, the room dim enough?)"}
+            s = best_shift(lit, face, reach)
+            if s is None:
+                return {"ok": False, "message": "could not match the light to the cello"}
+            if np.hypot(*s) < 1.0:
+                after = r
+                break
+            # camera shift -> projector shift: the mapping's local slope at the cello
+            ys, xs = np.nonzero(face)
+            c = np.array([xs.mean(), ys.mean()])
+            H = self._camera_to_projector(face.shape)
+            if H is None:
+                return {"ok": False, "message": "no camera -> projector mapping to correct"}
+            # the light now landing at c must land at c + s
+            pts = cv2.perspectiveTransform(np.float32([[c], [c + s]]), H)[:, 0]
+            d = pts[1] - pts[0]
+            self.calib.dx += float(d[0])
+            self.calib.dy += float(d[1])
+            moved += d
+            time.sleep(0.3)
+            after = self.measure_spill()
+            # keep a step only if the light fits better: dark parts of the
+            # cello (fingerboard, tailpiece) and shadows read as unlit and
+            # can point the search the wrong way
+            if not after.get("ok") or (after["face_coverage"] - 2 * after["spill_vs_mask"]
+                                       <= r["face_coverage"] - 2 * r["spill_vs_mask"]):
+                self.calib.dx -= float(d[0])
+                self.calib.dy -= float(d[1])
+                moved -= d
+                after = r
+                break
+            self.calib.save()
+        if after is None:
+            after = self.measure_spill()
+        return {"ok": True, "shift_px": [round(float(v), 1) for v in moved],
+                "before": {k: before[k] for k in ("face_coverage", "spill_vs_mask")},
+                "after": {k: after.get(k) for k in ("face_coverage", "spill_vs_mask")},
+                "message": f"moved the image {np.hypot(*moved):.0f} projector px; light on the face "
+                           f"{100 * before['face_coverage']:.0f}% -> {100 * after.get('face_coverage', 0):.0f}%, "
+                           f"spill {100 * before['spill_vs_mask']:.0f}% -> {100 * after.get('spill_vs_mask', 0):.0f}%"}
+
+    def _camera_to_projector(self, shape):
+        """The current camera -> projector mapping (3D at the cello's plane, else flat)."""
+        h, w = shape
+        if self.view3d is not None and self.plane.n is not None:
+            procam = self.procam_live or self.procam
+            H = self.plane.homography(procam, self.view3d[0], (0, 0, w - 1, h - 1))
+            return self.calib.nudge() @ H
+        if self.calib.ok:
+            return self.calib.matrix((w, h))
+        return None
 
     def latency_probe(self, rounds=3):
         """Flash the projector black -> white and find the first iPhone frame
@@ -1860,6 +2039,15 @@ def build_app(pipe):
         finally:
             sender.cancel()
             IPHONE.connected -= 1
+
+    @app.post("/api/projector/align")
+    def projector_align():
+        if not calib_lock.acquire(blocking=False):
+            raise HTTPException(409, "a calibration is already running")
+        try:
+            return pipe.auto_align()
+        finally:
+            calib_lock.release()
 
     @app.post("/api/debug/spill")
     def spill():

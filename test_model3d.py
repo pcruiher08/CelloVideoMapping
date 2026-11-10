@@ -139,6 +139,40 @@ def main():
     print(f"sway over 12 frames: worst IoU {worst:.3f}")
     assert worst > 0.95
 
+    # depth alone (no detection, as between YOLO frames): the visible cello
+    # comes from the depth fill grown from where the scan was last frame
+    worst = 1.0
+    for k in range(12):
+        R, t = pose([0.13 - 0.01 * k, 0.02, 1.35 + 0.004 * k], lean=1 + 0.6 * k, turn=-1 + 0.7 * k, roll=5)
+        pkt, truth, _ = view(R, t)
+        prev = model.render(model.M, K, (W, H)).astype(np.float32)
+        out = model.track(depth_refine(prev, pkt, K), pkt, K)
+        assert out is not None, (k, model.stats)
+        worst = min(worst, iou(out, truth))
+    print(f"depth only, 1 cm a frame over 12 frames: worst IoU {worst:.3f}")
+    assert worst > 0.93               # a harder motion than the sway above (up to 7 deg of turn)
+
+    # lost after a fast move, held at a steep angle (unlike the stand it
+    # was scanned on): it must re-lock on the first frame it is found again
+    R2, t2 = pose([0.06, 0.03, 1.4], lean=20, turn=18, roll=6)
+    for k in range(8):                    # lean in steps while tracked
+        a = (k + 1) / 8
+        R, t = pose([0.06, 0.03, 1.4], lean=20 * a, turn=18 * a, roll=6 * a)
+        pkt, truth, vis = view(R, t)
+        assert model.track(vis, pkt, K) is not None, (k, model.stats)
+    model.ok = False                      # lost; the cello is now 15 cm away
+    R3, t3 = pose([-0.09, 0.05, 1.42], lean=21, turn=17, roll=6)
+    pkt, truth, vis = view(R3, t3)
+    out = model.track(vis, pkt, K)
+    assert out is not None, model.stats
+    j = iou(out, truth)
+    for _ in range(3):                    # the same frame tracked on (warm): what the scan can do here
+        ref = model.track(vis, pkt, K)
+    j_ref = iou(ref, truth)
+    print(f"re-lock after a fast move at a steep angle: IoU {j:.3f} on the first frame "
+          f"(tracked at that pose: {j_ref:.3f})")
+    assert j > j_ref - 0.01
+
     # flood fill: a mask spilling 12 px onto the wall on the left, 10 px
     # short on the right, and missing the fingerboard strip
     pkt, truth, _ = view(R1, t1)
