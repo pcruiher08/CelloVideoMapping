@@ -45,7 +45,11 @@ def confidence(depth_mm, hits, edge=0.03):
 class KinectSource:
     """Camera-like source fed by the helper's stdout (see the module doc)."""
 
-    def __init__(self, width=1280, pipeline="gl", start=True):
+    def __init__(self, width=1280, pipeline="gl", start=True, edge_filter=False):
+        # edge_filter off: depth kept on sharp steps, so a thin bow in front of
+        # a far wall survives (the bow tracker); flying pixels at edges are
+        # left to the consumers' own filters
+        self.edge_filter = edge_filter
         self.width = width                 # colour is scaled to this width (the processing width)
         self.pipeline = pipeline
         self.cond = threading.Condition()
@@ -81,7 +85,8 @@ class KinectSource:
                 print(self.error)
                 return
             try:
-                self.proc = subprocess.Popen([HELPER, self.pipeline], stdin=subprocess.PIPE,
+                self.proc = subprocess.Popen([HELPER, self.pipeline, "edge" if self.edge_filter else "noedge"],
+                                             stdin=subprocess.PIPE,
                                              stdout=subprocess.PIPE, bufsize=0)
                 self._read(self.proc.stdout)
             except Exception as e:

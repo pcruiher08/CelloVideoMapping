@@ -180,6 +180,8 @@
       <div class="row"><label for="osc_host">OSC to</label><input type="text" id="osc_host" placeholder="TouchDesigner's IP (empty = off)" style="width:100%"></div>
       <div class="row"><label for="osc_port">Port</label><input type="number" id="osc_port" min="1" max="65535" style="width:100%"></div>
       <p class="hint">OSC out, every frame, for an <b>OSC In CHOP</b>: /cello/present x y angle size distance lean turn covered, /tuner/freq note cents level, /vibrato/rate extent (tuner values while the tuner runs).</p>
+      <p class="sub" id="bowStatus" style="margin:10px 0 4px">–</p>
+      <p class="hint">The bow, found in the depth (no markers; drawn in the Mask view): /bow/present, /bow/angle (to the strings, 0 = square, + = tip towards the scroll), /bow/tilt, /bow/speed (m/s, + = down-bow), /bow/along, and as a wand /bow/tip, /bow/frog, /bow/dir, /bow/tip_velocity (x y z in m from the cello's centre: x right, y up, z towards the camera), /bow/length.</p>
     </section>
 
     <section id="tunerSec">
@@ -461,6 +463,10 @@ function renderProjector() {
     ? '<span class="near">Outline not learned</span>: with the cello alone and still, press Learn (Calibrate 3D also learns it)'
     : sh.fitted ? `<span class="in">Learned outline fitted</span> (${Math.round(100 * sh.inliers)}% of the visible edge on it)`
     : '<span class="near">Learned outline not fitting</span>: using the live mask (cello moved far, or relearn)';
+  const bw = p.bow;
+  if (bw) $('#bowStatus').innerHTML = bw.present
+    ? `<span class="in">Bow</span> · angle ${bw.angle !== undefined ? (bw.angle > 0 ? '+' : '') + bw.angle + '°' : '–'} · speed ${bw.speed > 0 ? '+' : ''}${bw.speed} m/s · found in ${bw.found}% of frames`
+    : `<span class="near">Bow not found</span> (found in ${bw.found}% of recent frames)`;
   const sc = p.scan;
   if (sc) $('#scanStatus').innerHTML = !sc.learned
     ? '<span class="near">No 3D scan</span>: Calibrate 3D or Learn (cello alone, still) scans it; the depth fill works meanwhile'

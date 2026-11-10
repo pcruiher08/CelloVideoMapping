@@ -83,6 +83,10 @@ int main(int argc, char **argv) {
     std::signal(SIGTERM, [](int) { running = false; });
     libfreenect2::setGlobalLogger(libfreenect2::createConsoleLogger(libfreenect2::Logger::Warning));
     std::string want = argc > 1 ? argv[1] : "gl";
+    // "noedge": keep depth on sharp depth steps. The edge-aware filter drops
+    // them as flying pixels, and with them a thin bow in front of a far wall
+    // (all of it is edge), which the bow tracker needs
+    bool edge_filter = !(argc > 2 && std::string(argv[2]) == "noedge");
 
     libfreenect2::Freenect2 fn;
     if (fn.enumerateDevices() == 0) {
@@ -97,6 +101,9 @@ int main(int argc, char **argv) {
         std::fprintf(stderr, "cellokinect: could not open the Kinect\n");
         return 3;
     }
+    libfreenect2::Freenect2Device::Config config;
+    config.EnableEdgeAwareFilter = edge_filter;
+    dev->setConfiguration(config);
     libfreenect2::SyncMultiFrameListener color_listener(libfreenect2::Frame::Color);
     libfreenect2::SyncMultiFrameListener depth_listener(libfreenect2::Frame::Depth);
     dev->setColorFrameListener(&color_listener);

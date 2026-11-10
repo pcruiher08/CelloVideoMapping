@@ -25,6 +25,7 @@ import numpy as np
 from .cello3d import CelloPlane, front_face
 from .predict import PlanePredictor, PosePredictor, apply_axis, apply_mask
 from .shape import LearnedShape, ShapeMemory, close_across
+from .bow import BowTracker
 from .model3d import CelloModel, depth_refine
 from .live import LiveMedia, OscOut, ndi_sources, open_live, syphon_sources
 from .composite import composite, debug_overlay, mask_roi, shape_alpha
@@ -71,6 +72,7 @@ DEFAULTS = {
     "depth_shape": "scan",   # scan (the learned 3D scan, fitted; flood fill when it is lost) | fill | off
     "osc_host": "",          # TouchDesigner's address for the cello's state over OSC ("" = off)
     "osc_port": 9000,
+    "bow": True,             # find the bow in the depth (angle, speed, wand) and send it over OSC
     "display_warp": True,
     "motion_inset": 20.0,    # extra edge inset while the cello moves: mm per m/s (up to 12 mm; 0 = off)
     "yolo_every": 3,         # with the scan locked on, detect on 1 frame in this many; depth alone between (1 = every frame)    # move the light at the display's 60 Hz between tracked frames
@@ -499,6 +501,9 @@ class Pipeline(threading.Thread):
         self.scan_share = 0.0          # fraction of frames the scan fitted (smoothed)
         self.motion_extra = 0.0        # the edge's extra inset now (mm), from the cello's speed
         self.pose_log = None           # debug: per-frame pose while /api/debug/poselog records
+        self.clip = None               # recording a clip (/api/debug/clip): its folder and frame count
+        self.bow = BowTracker()        # the bow, from the depth (its own thread: bow_loop)
+        self.bow_share = 0.0           # fraction of depth frames the bow was found in (smoothed)
         self.seen = None               # the cello as segmented this frame (for learning)
         self.covered = 0.0             # fraction of the cello covered (hand, arm, bow)
         self.screens, self.screen_index = [], None   # displays, and the projector window's
@@ -765,11 +770,55 @@ class Pipeline(threading.Thread):
         near = cv2.resize(near.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST) > 0
         return near | mask
 
+    def cello_frame(self):
+        """The tracked cello for the bow tracker (camera frame), or None."""
+        m = self.model
+        sh = m.shape2d
+        if sh is None or m.body2d is None or not (m.ok or m.held()):
+            return None
+        M = m.M if m.Ms is None else m.Ms
+        R, t = M[:3, :3], M[:3, 3]
+        return {"C": R @ sh["Cr"] + t, "axis": R @ sh["v"], "n": R @ sh["n"],
+                "S": m.S @ R.T + t, "bottom": float(m.body2d[0][:, 1].min()) - 0.02}
+
+    def bow_loop(self):
+        """The bow, on its own thread (~20 ms a frame), from each new depth
+        frame: the projection does not wait for it. Sent over OSC as found."""
+        last = None
+        while self.running:
+            pkt = self.depth_pkt
+            if pkt is None or pkt is last or not self.settings.get("bow", True) or self.calibrating:
+                time.sleep(0.005)
+                continue
+            last = pkt
+            try:
+                cello = self.cello_frame()
+                st = self.bow.update(pkt, pkt["K"], tuple(pkt["size"]), cello,
+                                     t=pkt.get("t_cap_mac") or time.time())
+                self.bow_share = 0.95 * self.bow_share + 0.05 * (st is not None)
+                if self.osc.client is not None:
+                    self.osc.send_bow(st, None if cello is None else cello["C"])
+            except Exception as e:           # never stop the show over the bow
+                print(f"bow: {e!r}")
+                time.sleep(0.1)
+
+    def bow_state(self):
+        st = self.bow.state
+        if not st or not st.get("ok"):
+            return {"present": False, "found": round(100 * self.bow_share)}
+        out = {"present": True, "found": round(100 * self.bow_share),
+               "speed": round(st["speed"], 2), "length": round(st["length"], 2)}
+        for k in ("angle", "tilt", "along"):
+            if k in st:
+                out[k] = round(st[k], 1 if k != "along" else 3)
+        return out
+
     def run(self):
         """Stage 2: smoothing, orientation, the projector frame and the
         browser views, for each newly segmented frame."""
         threading.Thread(target=self.segment_loop, daemon=True).start()
         threading.Thread(target=self.relocate_loop, daemon=True).start()
+        threading.Thread(target=self.bow_loop, daemon=True).start()
         self.t_prev = time.time()
         while self.running:
             with self.seg_cond:
@@ -921,6 +970,19 @@ class Pipeline(threading.Thread):
                 face = self.model.render_face(Kf, frame.shape[1::-1], inset, whole=whole, hold=True)
             except Exception as e:
                 print(f"scan face: {e!r}")
+        clip = self.clip
+        if clip is not None and pkt is not None and clip["n"] < clip["max"]:
+            # colour (JPEG), depth (16-bit PNG, mm) and the tracked cello, for
+            # developing on a recording (the bow tracker)
+            i = clip["n"]
+            cv2.imwrite(os.path.join(clip["dir"], f"{i:05d}.jpg"), frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
+            d = np.nan_to_num(pkt["depth"], nan=0.0)
+            cv2.imwrite(os.path.join(clip["dir"], f"{i:05d}_depth.png"), np.clip(d * 1000, 0, 65535).astype(np.uint16))
+            clip["meta"].append({"i": i, "t": self.t_meas, "K": Kf, "size": frame.shape[1::-1],
+                                 "scan_ok": bool(self.model.ok),
+                                 "M": None if self.model.Ms is None else self.model.Ms.copy(),
+                                 "detected": not depth_only})
+            clip["n"] += 1
         log = self.pose_log
         if log is not None and len(log) < 2000:
             m = self.model
@@ -997,6 +1059,14 @@ class Pipeline(threading.Thread):
             jo = cv2.imencode(".jpg", out, [cv2.IMWRITE_JPEG_QUALITY, 85])[1].tobytes()
         # the mask view is only drawn and encoded while someone watches it
         dbg = debug_overlay(frame, inst or [], mask, axis) if self.watched("debug") else None
+        bst = self.bow.state
+        if dbg is not None and Kf is not None and bst and bst.get("ok"):
+            # the bow as found (frog blue, tip red), in the Mask view
+            def px(p):
+                return (int(p[0] / p[2] * Kf[0, 0] + Kf[0, 2]), int(p[1] / p[2] * Kf[1, 1] + Kf[1, 2]))
+            cv2.line(dbg, px(bst["frog"]), px(bst["tip"]), (0, 255, 255), 3, cv2.LINE_AA)
+            cv2.circle(dbg, px(bst["frog"]), 7, (255, 80, 0), -1)
+            cv2.circle(dbg, px(bst["tip"]), 7, (0, 0, 255), -1)
         tick("output view")
 
         dt = now - self.t_prev
@@ -1678,6 +1748,7 @@ class Pipeline(threading.Thread):
                 "steps_ms": {k: round(v, 1) for k, v in self.steps.items()},
                 "depth_only": round(100 * self.depth_only_share),
                 "scan_fitted": round(100 * self.scan_share),
+                "bow": self.bow_state(),
                 "phone": self.phone_state(),
                 "kinect": self.depthcam_state(),
                 "iphone": {"live": IPHONE.live, "fps": round(IPHONE.fps, 1),
@@ -2200,6 +2271,20 @@ def build_app(pipe):
         finally:
             sender.cancel()
             IPHONE.connected -= 1
+
+    @app.post("/api/debug/clip")
+    def record_clip(seconds: float = 15.0):
+        """Record `seconds` of colour + depth + the tracked cello to
+        data/clips/<time>/ (frames as files, meta.pkl)."""
+        import pickle
+        folder = os.path.join(ROOT, "data", "clips", time.strftime("%Y%m%d-%H%M%S"))
+        os.makedirs(folder, exist_ok=True)
+        pipe.clip = {"dir": folder, "n": 0, "max": int(seconds * 35), "meta": []}
+        time.sleep(min(seconds, 60.0))
+        clip, pipe.clip = pipe.clip, None
+        with open(os.path.join(folder, "meta.pkl"), "wb") as f:
+            pickle.dump({"frames": clip["meta"], "scan": pipe.model.path}, f)
+        return {"dir": folder, "frames": clip["n"]}
 
     @app.post("/api/debug/poselog")
     def poselog(seconds: float = 8.0):

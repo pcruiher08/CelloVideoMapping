@@ -268,6 +268,15 @@ class OscOut:
       /tuner/cents          -50..50 off the note
       /tuner/level          dB
       /vibrato/rate, /vibrato/extent   Hz, cents (0 without vibrato)
+      /bow/present          1 when the bow is found, else 0 (cellomask/bow.py)
+      /bow/angle            degrees to the strings in the cello's plane (0 = square, + = tip towards the scroll)
+      /bow/tilt             degrees out of the cello's plane (which string it leans to)
+      /bow/speed            m/s along the bow (+ = down-bow, - = up-bow)
+      /bow/along            m along the strings where it crosses, from the cello's centre (+ = towards the scroll)
+      /bow/tip, /bow/frog   x y z, m (the wand): origin the cello's centre, x right, y up, z towards the camera
+      /bow/dir              x y z, unit, frog -> tip
+      /bow/tip_velocity     x y z, m/s
+      /bow/length           m of bow seen
     """
 
     def __init__(self):
@@ -320,4 +329,32 @@ class OscOut:
                 c.send_message("/vibrato/extent", float(v.get("extent", 0.0)) if on else 0.0)
             self.sent += 1
         except Exception as e:                # a bad address must not stop the show
+            self.error = repr(e)
+
+    def send_bow(self, st, origin=None):
+        """The bow (BowTracker state; None or not ok = not found). origin:
+        the cello's centre (camera frame, m), else the camera."""
+        c = self.client
+        if c is None:
+            return
+        o = np.zeros(3) if origin is None else np.asarray(origin, float)
+
+        def stage(p, point=True):           # camera frame -> x right, y up, z towards the camera
+            q = (np.asarray(p, float) - o) if point else np.asarray(p, float)
+            return [float(q[0]), float(-q[1]), float(-q[2])]
+        try:
+            ok = bool(st and st.get("ok"))
+            c.send_message("/bow/present", 1.0 if ok else 0.0)
+            if not ok:
+                return
+            for k in ("angle", "tilt", "along"):
+                if k in st:
+                    c.send_message(f"/bow/{k}", float(st[k]))
+            c.send_message("/bow/speed", float(st["speed"]))
+            c.send_message("/bow/length", float(st["length"]))
+            c.send_message("/bow/tip", stage(st["tip"]))
+            c.send_message("/bow/frog", stage(st["frog"]))
+            c.send_message("/bow/dir", stage(st["dir"], point=False))
+            c.send_message("/bow/tip_velocity", stage(st["tip_vel"], point=False))
+        except Exception as e:
             self.error = repr(e)
