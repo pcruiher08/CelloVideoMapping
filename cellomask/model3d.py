@@ -165,6 +165,7 @@ class CelloModel:
         self.M = np.eye(4)
         self.Ms = None                   # M smoothed (what is drawn), see _smooth
         self.lost_R = None               # rotation when last tracked: where to start when lost
+        self.t_ok = None                 # when the fit last succeeded
         self.t_s = None
         self.ok = False
         self.stats = {}
@@ -308,10 +309,17 @@ class CelloModel:
             self.faces[key] = self._outline3d(m)
         return self.faces[key]
 
-    def render_face(self, K, size, inset_mm, whole=False):
+    def held(self, hold=0.5):
+        """Lost less than `hold` s ago: the last pose still stands in (a
+        dropped fit or two must not flash the raw segmentation's edge)."""
+        return (not self.ok and self.t_ok is not None and self.Ms is not None
+                and time.time() - self.t_ok < hold)
+
+    def render_face(self, K, size, inset_mm, whole=False, hold=False):
         """The light's shape this frame: the clean (body or whole) outline at
-        the smoothed pose, with anti-aliased edges (float 0..1, frame size)."""
-        if not self.ok:
+        the smoothed pose, with anti-aliased edges (float 0..1, frame size).
+        hold: also while held() (at the last pose)."""
+        if not (self.ok or (hold and self.held())):
             return None
         M = self.M if self.Ms is None else self.Ms
         o = self.face(inset_mm, whole) @ M[:3, :3].T + M[:3, 3]
@@ -476,6 +484,7 @@ class CelloModel:
         if not self.ok:
             self.Ms = None                   # found again: do not glide over from where it was lost
         self.M, self.ok = M, True
+        self.t_ok = time.time()
         self.lost_R = M[:3, :3]
         Ms = self._smooth(M, time.time())
         if Ms is not M:

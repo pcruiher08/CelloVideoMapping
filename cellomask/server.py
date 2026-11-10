@@ -495,6 +495,7 @@ class Pipeline(threading.Thread):
         self.steps = {}                # ms per step of render (smoothed)
         self.depth_only_run = 0        # depth-only frames since the last detection
         self.depth_only_share = 0.0    # fraction of frames tracked from depth alone (smoothed)
+        self.scan_share = 0.0          # fraction of frames the scan fitted (smoothed)
         self.seen = None               # the cello as segmented this frame (for learning)
         self.covered = 0.0             # fraction of the cello covered (hand, arm, bow)
         self.screens, self.screen_index = [], None   # displays, and the projector window's
@@ -842,6 +843,12 @@ class Pipeline(threading.Thread):
                 self.model.ok = False
         else:
             self.model.ok = False
+        self.scan_share = 0.95 * self.scan_share + 0.05 * (scanned is not None)
+        if scanned is None and use_depth and self.model.held() and s["depth_shape"] == "scan":
+            # dropped for a moment: the clean shape at its last pose, not the raw mask
+            held = self.model.render(self.model.Ms, Kf, frame.shape[1::-1])
+            if held is not None:
+                scanned = held.astype(np.float32)
         tick("scan fit")
         if seen is not None and self.axis.last is not None:
             # the fingerboard slot: gaps up to ~30% of the cello's width
@@ -886,7 +893,7 @@ class Pipeline(threading.Thread):
             try:
                 face = self.model.render_face(Kf, frame.shape[1::-1],
                                               s["inset_mm"] if s["surface"] == "front" else 0.0,
-                                              whole=s["surface"] != "front")
+                                              whole=s["surface"] != "front", hold=True)
             except Exception as e:
                 print(f"scan face: {e!r}")
         if face is not None:
@@ -1583,6 +1590,7 @@ class Pipeline(threading.Thread):
                 "latency": self.latency_state(),
                 "steps_ms": {k: round(v, 1) for k, v in self.steps.items()},
                 "depth_only": round(100 * self.depth_only_share),
+                "scan_fitted": round(100 * self.scan_share),
                 "phone": self.phone_state(),
                 "kinect": self.depthcam_state(),
                 "iphone": {"live": IPHONE.live, "fps": round(IPHONE.fps, 1),
