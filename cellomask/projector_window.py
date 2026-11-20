@@ -50,10 +50,12 @@ def pick_screen(spec):
 
 
 # NSWindow collection behaviour: on all Spaces, stationary in Mission
-# Control, out of the window cycle; and a level above normal windows (so
-# TouchDesigner's own window cannot cover the projector)
+# Control, out of the window cycle; and the screen saver's level, above the
+# menu bar (macOS draws its menu bar, with the clock, on every display: at
+# the floating level it showed across the top of the projection) and above
+# TouchDesigner's own windows
 _ALL_SPACES, _STATIONARY, _IGNORES_CYCLE = 1 << 0, 1 << 4, 1 << 6
-_FLOATING_LEVEL = 3
+_COVER_LEVEL = 1000                           # NSScreenSaverWindowLevel
 
 
 def cover(win, screen):
@@ -63,7 +65,12 @@ def cover(win, screen):
     ns = getattr(win, "_nswindow", None)
     if ns is not None:                       # macOS
         ns.setCollectionBehavior_(_ALL_SPACES | _STATIONARY | _IGNORES_CYCLE)
-        ns.setLevel_(_FLOATING_LEVEL)
+        ns.setLevel_(_COVER_LEVEL)
+        # the whole screen, the menu bar's strip included (an ordinary window
+        # is kept below it)
+        scr = ns.screen()
+        if scr is not None:
+            ns.setFrame_display_(scr.frame(), True)
     win.set_mouse_visible(False)
     win.covering = True
 
