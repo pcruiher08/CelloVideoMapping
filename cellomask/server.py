@@ -25,7 +25,7 @@ import numpy as np
 from .cello3d import CelloPlane, front_face
 from .predict import PlanePredictor, PosePredictor, apply_axis, apply_mask
 from .shape import LearnedShape, ShapeMemory, close_across
-from .bow import BowTracker
+from .bowproc import BowProcess
 from .model3d import CelloModel, depth_refine
 from .live import LiveMedia, OscOut, ndi_sources, open_live, syphon_sources
 from .composite import composite, debug_overlay, mask_roi, shape_alpha
@@ -502,8 +502,9 @@ class Pipeline(threading.Thread):
         self.motion_extra = 0.0        # the edge's extra inset now (mm), from the cello's speed
         self.pose_log = None           # debug: per-frame pose while /api/debug/poselog records
         self.clip = None               # recording a clip (/api/debug/clip): its folder and frame count
-        self.bow = BowTracker()        # the bow, from the depth (its own thread: bow_loop)
+        self.bow = BowProcess()        # the bow, from the depth (own thread: bow_loop; own process: bowproc)
         self.bow_share = 0.0           # fraction of depth frames the bow was found in (smoothed)
+        self.bow_rec = None            # debug: the bow tracker's inputs while /api/debug/bowrec records
         self.seen = None               # the cello as segmented this frame (for learning)
         self.covered = 0.0             # fraction of the cello covered (hand, arm, bow)
         self.screens, self.screen_index = [], None   # displays, and the projector window's
@@ -782,8 +783,10 @@ class Pipeline(threading.Thread):
                 "S": m.S @ R.T + t, "bottom": float(m.body2d[0][:, 1].min()) - 0.02}
 
     def bow_loop(self):
-        """The bow, on its own thread (~20 ms a frame), from each new depth
-        frame: the projection does not wait for it. Sent over OSC as found."""
+        """The bow, on its own thread, from each new depth frame: the
+        projection does not wait for it. The work (~35 ms a frame) is done
+        in a worker process (bowproc), so it does not slow the cello's
+        tracking either. Sent over OSC as found."""
         last = None
         while self.running:
             pkt = self.depth_pkt
@@ -793,8 +796,13 @@ class Pipeline(threading.Thread):
             last = pkt
             try:
                 cello = self.cello_frame()
-                st = self.bow.update(pkt, pkt["K"], tuple(pkt["size"]), cello,
-                                     t=pkt.get("t_cap_mac") or time.time())
+                tb = pkt.get("t_cap_mac") or time.time()
+                st = self.bow.update(pkt, pkt["K"], tuple(pkt["size"]), cello, t=tb)
+                rec = self.bow_rec
+                if rec is not None and len(rec) < 600:
+                    # debug: exactly what the bow tracker got, and gave
+                    rec.append({"depth": pkt["depth"].copy(), "K": pkt["K"], "size": tuple(pkt["size"]),
+                                "cello": cello, "t": tb, "state": None if st is None else dict(st)})
                 self.bow_share = 0.95 * self.bow_share + 0.05 * (st is not None)
                 if self.osc.client is not None:
                     self.osc.send_bow(st, None if cello is None else cello["C"])
@@ -944,6 +952,10 @@ class Pipeline(threading.Thread):
         # filters run on capture time: frames arrive unevenly over Wi-Fi
         self.t_meas = (pkt.get("t_cap_mac") if pkt is not None else None) or now
         axis = self.axis(mask, now) if mask is not None else None
+        if axis is not None and scanned is not None and Kf is not None:
+            # the scan's own centre line: the silhouette's axis leaned off the
+            # strings on a cello turned to show a rib, and the picture with it
+            axis = self.model.axis_px(Kf) or axis
         quad = self.update_3d(frame, seen, axis, pkt, s, now)    # the plane from the cello's own depth
         tick("axis + 3D")
         if self.osc.client is not None:
@@ -1271,6 +1283,17 @@ class Pipeline(threading.Thread):
             return black
         s_feather = s["feather"]
         s = dict(s, feather=feather)
+        H = self._cam_to_projector_for(roi, plane, frame.shape)
+        if (mode == "content" and edge is not None and repl is not None and quad is not None
+                and s["mode"] == "warp" and s["blend"] == "normal"):
+            # the picture straight into projector pixels, in one warp: drawn
+            # in the camera's view first, TouchDesigner's image had ~185 px
+            # for the cello's body, which the projector shows ~1030 px tall
+            # (soft, 5x enlarged); now only the cello's placement comes from
+            # the camera
+            out = self._content_direct(repl, quad, H, edge, s_feather, s["opacity"])
+            if out is not None:
+                return out
         if mode == "white":                  # the mask as white light: alignment check
             x0, y0, x1, y1 = roi
             cam = np.zeros_like(frame)
@@ -1286,6 +1309,15 @@ class Pipeline(threading.Thread):
                             feather=s["feather"], grow=s["grow"], opacity=s["opacity"],
                             blend=s["blend"], background=np.zeros_like(frame), quad=quad,
                             inward=True)
+        out = Calibration(H, self.proj_size).warp(cam, roi)
+        if edge is not None:
+            out = self._cut_edge(out, edge, H, s_feather)
+        return out
+
+    def _cam_to_projector_for(self, roi, plane, shape):
+        """Camera px -> projector px for this frame: the cello's (forecast)
+        plane through the 3D projector model, else the flat calibration.
+        Records the mapping for the display warp."""
         if self.view3d is not None:
             K = self.view3d[0]
             procam = self.procam_live or self.procam
@@ -1293,14 +1325,42 @@ class Pipeline(threading.Thread):
             nudge = self.calib.nudge() if self.calib is not None else np.eye(3)
             H = nudge @ H                            # the Shift / Scale nudge still applies
             self._warp = ("3d", K, roi, procam, nudge)
-            out = Calibration(H, self.proj_size).warp(cam, roi)
-        else:
-            H = self.calib.matrix((cam.shape[1], cam.shape[0]))
-            self._warp = ("flat", H)
-            out = self.calib.warp(cam, roi)
-        if edge is not None:
-            out = self._cut_edge(out, edge, H, s_feather)
-        return out
+            return H
+        H = self.calib.matrix((shape[1], shape[0]))
+        self._warp = ("flat", H)
+        return H
+
+    def _content_direct(self, img, quad, H, edge, feather, opacity):
+        """The picture warped from its own pixels straight to the projector's:
+        cover-fitted to the cello's true rectangle (quad: its corners in
+        camera px and its size in m, as composite's warp mode), through H,
+        then cut by the scan's outline. None if it cannot be placed."""
+        w, h = self.proj_size
+        corners, (L, Wd) = quad
+        ih, iw = img.shape[:2]
+        sc = max(Wd / iw, L / ih)                      # metres per image pixel, cover
+        cw, ch = Wd / sc, L / sc
+        ox, oy = (iw - cw) / 2, (ih - ch) / 2
+        src = np.float32([[ox, oy], [ox + cw, oy], [ox + cw, oy + ch], [ox, oy + ch]])
+        pc = cv2.perspectiveTransform(np.asarray(corners, np.float64).reshape(-1, 1, 2), H)[:, 0]
+        # only the cello's box on the projector (the outline's, with a margin)
+        A = self._ahead_A
+        px = edge if A is None else edge @ A[:, :2].T + A[:, 2]
+        q = cv2.perspectiveTransform(px.reshape(-1, 1, 2).astype(np.float64), H)[:, 0]
+        if not (np.isfinite(pc).all() and np.isfinite(q).all()):
+            return None
+        x0, y0 = np.floor(q.min(0)).astype(int) - 8
+        x1, y1 = np.ceil(q.max(0)).astype(int) + 8
+        x0, y0, x1, y1 = max(x0, 0), max(y0, 0), min(x1, w), min(y1, h)
+        out = np.zeros((h, w, 3), np.uint8)
+        if x1 <= x0 or y1 <= y0:
+            return out
+        M = cv2.getPerspectiveTransform(src, (pc - [x0, y0]).astype(np.float32))
+        out[y0:y1, x0:x1] = cv2.warpPerspective(img, M, (x1 - x0, y1 - y0), flags=cv2.INTER_LINEAR,
+                                                borderMode=cv2.BORDER_REFLECT)
+        if opacity < 1:
+            out[y0:y1, x0:x1] = (out[y0:y1, x0:x1] * opacity).astype(np.uint8)
+        return self._cut_edge(out, edge, H, feather)
 
     def _cut_edge(self, out, edge, H, feather):
         """Keep only what is inside the scan's outline, drawn in projector
@@ -1331,7 +1391,10 @@ class Pipeline(threading.Thread):
             # camera px -> projector px: the outline's length in each
             scale = np.linalg.norm(np.diff(q, axis=0), axis=1).sum() / max(
                 1e-6, np.linalg.norm(np.diff(px, axis=0), axis=1).sum())
-            sig = max(0.5, 0.5 * feather * scale)
+            # capped: with a wrong calibration (a new room) the outline can
+            # map thousands of px off-screen, and an unbounded blur kept one
+            # GaussianBlur call running for minutes, freezing the show
+            sig = min(max(0.5, 0.5 * feather * min(scale, 20.0)), 30.0)
             m = cv2.GaussianBlur(m, (0, 0), sig)
             # pulled in so the softening stays inside the outline
             m = (np.clip(m.astype(np.int16) * 2 - 255, 0, 255)).astype(np.uint8)
@@ -1624,7 +1687,11 @@ class Pipeline(threading.Thread):
                         f"({100 * moved:.1f}% of the distance); keep everything still and try again")
         K = before[0]["K"]
         X, p = correspondences(st["px"], st["py"], st["valid"], d0, K)
-        if len(X) < 2000:
+        np.savez_compressed(os.path.join(dbg, "lidar.npz"), X=X, p=p, depth=d0, K=K)
+        # 2000 is comfortable; down to 800 is accepted when the fit is clean
+        # (below). A stage with a black backdrop gave depth only on the
+        # cello and a sheet of cardboard: ~1200 points
+        if len(X) < 800:
             return fail(f"only {len(X)} points have both stripes and depth: is the projector "
                         "lighting what the phone sees, and the room dark enough?")
         z5, z95 = np.percentile(X[:, 2], [5, 95])
@@ -1634,7 +1701,9 @@ class Pipeline(threading.Thread):
                         "the wall, the floor, or a box")
         sol = solve_projector(X, p, self.proj_size)
         why = "the fit failed" if sol is None else implausible3d(sol, self.proj_size)
-        np.savez_compressed(os.path.join(dbg, "lidar.npz"), X=X, p=p, depth=d0, K=K)
+        if not why and len(X) < 2000 and (sol["inliers"] < 0.75 or sol["median"] > 3.0):
+            why = (f"only {len(X)} points, and the fit is loose ({100 * sol['inliers']:.0f}% agree, "
+                   f"median {sol['median']:.1f} px): light more of the scene with something matte and pale")
         if why:
             return fail(f"3D calibration rejected ({why}); the previous one is kept")
         self.procam = Procam3D(**sol, proj_size=self.proj_size, cam_K=K, cam_size=(ww, hh))
@@ -1652,6 +1721,13 @@ class Pipeline(threading.Thread):
                 scanned = self.model.learn(before, region.astype(np.float32), K, (ww, hh))
             except Exception as e:
                 print(f"3D scan: {e!r}")
+        # start the plane and the motion forecasts over, as a restart would:
+        # after a calibration in a new room the light kept alternating
+        # between the right place and a larger, offset image until the show
+        # was restarted
+        self.plane.reset()
+        self.plane_pred.reset()
+        self.pose_pred.reset()
         return {"ok": True, "markers": sol["n"], "total": 0, "error": round(sol["rms"], 2),
                 "message": f"3D calibration: {self.procam.summary()}. "
                            f"Flat mapping: {flat['message']}"
@@ -2230,6 +2306,11 @@ def build_app(pipe):
         if not calib_lock.acquire(blocking=False):
             raise HTTPException(409, "a calibration is already running")
         try:
+            if pipe.projector_window and pipe.screen_index is not None:
+                # cover the screen again: the f / Esc key leaves a half-size test
+                # window, and the stripes then light only part of the room
+                pipe.screen_request = pipe.screen_index
+                time.sleep(0.5)
             if body.get("method") == "markers":
                 return pipe.calibrate()
             if body.get("method") == "lidar":
@@ -2285,6 +2366,33 @@ def build_app(pipe):
         with open(os.path.join(folder, "meta.pkl"), "wb") as f:
             pickle.dump({"frames": clip["meta"], "scan": pipe.model.path}, f)
         return {"dir": folder, "frames": clip["n"]}
+
+    @app.post("/api/projector/room_changed")
+    def room_changed():
+        """The room changed around a Kinect that did not move (boards,
+        stands, people moved): take its depth now as the reference for
+        noticing the Kinect move, and drop the correction the old one gave
+        (it read moved boards as the Kinect moved by 22 cm, and shifted the
+        light off the cello)."""
+        pkt = pipe.depth_pkt
+        if pkt is None:
+            raise HTTPException(409, "no depth yet")
+        pipe.phone.save_ref(pkt["depth"].copy(), pkt["K"], tuple(pkt["size"]), pkt.get("orientation"))
+        pipe.procam_live = None
+        return {"ok": True}
+
+    @app.post("/api/debug/bowrec")
+    def bow_record(seconds: float = 5.0):
+        """Record the bow tracker's own inputs and results for `seconds`
+        (calib_debug/bowrec_<time>.pkl), to replay it exactly."""
+        import pickle
+        pipe.bow_rec = []
+        time.sleep(min(seconds, 30.0))
+        rec, pipe.bow_rec = pipe.bow_rec, None
+        path = os.path.join(pipe.debug_dir, f"bowrec_{time.time():.0f}.pkl")
+        with open(path, "wb") as f:
+            pickle.dump(rec, f)
+        return {"path": path, "frames": len(rec)}
 
     @app.post("/api/debug/poselog")
     def poselog(seconds: float = 8.0):

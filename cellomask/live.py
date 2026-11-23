@@ -21,7 +21,7 @@ import numpy as np
 
 NDI_PREFIX = "ndi:"
 SYPHON_PREFIX = "syphon:"
-MAX_SIDE = 1600          # like still images: bigger only costs time
+MAX_SIDE = 2048          # the projector shows the whole cello ~1650 px tall: room to spare, bigger only costs time
 MAX_FPS = 30             # the projection draws 15-30 frames a second: more is wasted CPU
 
 

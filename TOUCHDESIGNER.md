@@ -43,8 +43,12 @@ Keys in the projector window: **f** covers or uncovers the screen,
   final visual. The zip comes set to use it.
 - **Another computer:** add an **NDI Out TOP**, then press **Find NDI / Syphon
   senders** in the web page and pick it in the gallery. Use a wired network.
-- **Format:** a portrait texture of about 1:2.4 fits the cello best. The image
-  follows the cello in 3D: it moves, leans and turns with it, in perspective.
+- **Format:** a portrait texture of about 1:2.4 fits the cello best, at
+  **about 800 x 1920 or larger** (the projector shows the whole cello about
+  1650 pixels tall; the app uses up to 2048 pixels of the image's long side).
+  The image goes straight to projector pixels in one warp, so its detail
+  reaches the cello. It follows the cello in 3D: it moves, leans and turns
+  with it, in perspective.
 - **Lit area:** only the cello's front face gets light (not the neck or the
   ribs), with a clean, fixed outline. A hand or the bow in front of the cello
   is painted over, so the shape doesn't get bitten.
@@ -84,8 +88,11 @@ values are floats, sent every tracked frame (about 20–30 per second).
 | `/bow/length` | metres of bow seen (shorter than the bow: the hand hides the frog end) |
 
 The bow is found on about 97–100% of frames while bowing and about 75% while
-waving it in the air. Very fast swings blur and drop out for a moment. A bow
-lying still for many seconds is taken as part of the room until it moves.
+waving it in the air. Very fast swings blur and drop out for a moment. It is
+found in front of a black backdrop too (which gives the Kinect no depth), and
+a bow resting across the strings stays found. It is followed only above the
+lower end of the cello's body (below it, the floor and stands are in the way).
+The bow tracker runs in its own process, so it does not slow the projection.
 
 ### Sound (when the tuner runs: pick it in the gallery, or open its panel)
 
@@ -120,7 +127,10 @@ lying still for many seconds is taken as part of the room until it moves.
 - **The light freezes for a few seconds:** the Kinect's USB connection dropped.
   It reconnects by itself; plug it directly into the Mac.
 - **The light is offset from the cello:** the Kinect or projector moved. Press
-  **Calibrate 3D**.
+  **Calibrate 3D**. If neither moved but things around the stage did (boards,
+  stands), the app may take that for the Kinect moving; tell it the room
+  changed instead (no calibration needed):
+  `curl -X POST http://127.0.0.1:8000/api/projector/room_changed`
 - **Nothing on the projector:** the projector must be set to extend. Pick the
   right screen under **Screen**, or press **f** in the projector window.
 - **The picture is a "waiting" card:** TouchDesigner isn't sending yet. Check

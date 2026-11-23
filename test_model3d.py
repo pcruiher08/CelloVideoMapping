@@ -207,6 +207,36 @@ def main():
     e_cello = size_error(physical_size(truth, pkt, K), CELLO_SIZE)
     print(f"person vs cello: scan fits only the cello; size error {e_shirt:.2f} vs {e_cello:.2f}")
     assert e_shirt > 0.45 > e_cello
+    # the picture goes straight to projector pixels: drawn in the camera's
+    # view first (the cello's body ~185 px there, ~1000 on the projector) its
+    # detail was lost
+    from cellomask.composite import composite
+    from cellomask.server import Pipeline
+    tex = np.zeros((1600, 680, 3), np.uint8)
+    for y in range(0, 1600, 40):
+        cv2.line(tex, (0, y), (680, y), (60, 180, 255), 2)
+    for x in range(0, 680, 40):
+        cv2.line(tex, (x, 0), (x, 1600), (60, 180, 255), 2)
+    corners = np.float32([[430, 130], [530, 130], [535, 400], [425, 400]])
+    Hp = np.array([[5.5, 0.0, -1700.0], [0.0, 5.5, -650.0], [0.0, 0.0, 1.0]])
+    tt = np.linspace(0, 2 * np.pi, 400, endpoint=False)
+    edge = np.c_[480 + 50 * np.cos(tt), 265 + 130 * np.sin(tt)]
+
+    class Proj:
+        proj_size = (1920, 1200)
+        _ahead_A = None
+        _cut_edge = Pipeline._cut_edge
+    new = Pipeline._content_direct(Proj(), tex, (corners, (1.2, 0.44)), Hp, edge, 2, 1.0)
+    m = np.zeros((540, 960), np.float32)
+    cv2.fillPoly(m, [np.round(edge).astype(np.int32)], 1.0)
+    old = cv2.warpPerspective(composite(np.zeros((540, 960, 3), np.uint8), m, tex, mode="warp",
+                                       quad=(corners, (1.2, 0.44)), feather=0,
+                                       background=np.zeros((540, 960, 3), np.uint8)), Hp, (1920, 1200))
+
+    def detail(a):
+        return float(np.abs(cv2.Laplacian(cv2.cvtColor(a[300:700, 760:1160], cv2.COLOR_BGR2GRAY), cv2.CV_32F)).mean())
+    print(f"picture detail on the projector: through the camera view {detail(old):.1f}, direct {detail(new):.1f}")
+    assert detail(new) > 4 * detail(old)
     print("ALL TESTS PASSED")
 
 

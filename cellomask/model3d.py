@@ -296,6 +296,19 @@ class CelloModel:
         self.shape2d = {"clean": clean, "body": body, "lo": lo, "Cr": Cr, "u": u, "v": v, "n": n,
                         "symmetry": float(sym)}
         self.O = self._outline3d(clean)
+        # the centre line (the mirror line) and the cello's rectangle along
+        # it, in plane metres: the picture's axis (axis_px). The silhouette's
+        # own axis tilted off the strings on a cello turned to show a rib
+        p0 = (Rinv @ np.array([cx, h / 2, 1.0]) + 0.5) * r + lo
+        d = Rinv[:, :2] @ np.array([0.0, 1.0])
+        d /= np.linalg.norm(d)
+        if d[1] < 0:                                  # towards the scroll (+v)
+            d = -d
+        e = np.array([d[1], -d[0]])
+        xy = self._outline2d(clean) - p0
+        a, b = xy @ d, xy @ e
+        self.shape2d["rect"] = (p0 + d * (a.min() + a.max()) / 2 + e * (b.min() + b.max()) / 2,
+                                d, e, np.ptp(a) / 2, np.ptp(b) / 2)
         # the body's outline as points with inward normals: each is pulled in
         # by the inset plus its own measured correction (face)
         xy = self._outline2d(body)
@@ -463,6 +476,24 @@ class CelloModel:
         out = np.zeros((h, w), np.uint8)
         cv2.fillPoly(out, [np.round(px * 4).astype(np.int32)], 1, lineType=cv2.LINE_8, shift=2)
         return out
+
+    def axis_px(self, K):
+        """The picture's axis from the scan at its (smoothed) pose, as
+        AxisTracker gives it: (cx, cy, length, width, up) in the frame's
+        pixels (up: the angle of the scroll direction). None without it."""
+        sh = getattr(self, "shape2d", None)
+        if sh is None or "rect" not in sh:
+            return None
+        M = self.M if self.Ms is None else self.Ms
+        c, d, e, hl, hw = sh["rect"]
+        P = self._to3d(np.array([c, c + d * hl, c - d * hl, c - e * hw, c + e * hw])) @ M[:3, :3].T + M[:3, 3]
+        if (P[:, 2] < 0.1).any():
+            return None
+        px = np.c_[P[:, 0] / P[:, 2] * K[0, 0] + K[0, 2], P[:, 1] / P[:, 2] * K[1, 1] + K[1, 2]]
+        top, bottom = px[1], px[2]
+        up = float(np.arctan2(*(top - bottom)[::-1]))
+        return (float(px[0, 0]), float(px[0, 1]), float(np.linalg.norm(top - bottom)),
+                float(np.linalg.norm(px[4] - px[3])), up)
 
     def dimensions(self):
         """(length, width) of the scanned cello in metres."""
