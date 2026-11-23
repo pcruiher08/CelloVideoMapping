@@ -162,10 +162,12 @@ class BowTracker:
         T = np.sort(np.where(inl, t, np.inf), axis=1)
         ok = np.isfinite(T)
         brk = np.ones((h, n), bool)
-        brk[:, 1:] = ~(np.diff(T, axis=1) <= gap)
-        start = np.maximum.accumulate(np.where(brk, np.arange(n), 0), axis=1)
-        T0 = np.take_along_axis(T, start, 1)
-        run = np.where(ok, T - T0, -1.0)
+        # (non-inliers are inf: inf - inf warned on every frame, harmlessly)
+        with np.errstate(invalid="ignore"):
+            brk[:, 1:] = ~(np.diff(T, axis=1) <= gap)
+            start = np.maximum.accumulate(np.where(brk, np.arange(n), 0), axis=1)
+            T0 = np.take_along_axis(T, start, 1)
+            run = np.where(ok, T - T0, -1.0)
         k = run.argmax(1)
         rows = np.arange(h)
         return run[rows, k], T0[rows, k], T[rows, k]
