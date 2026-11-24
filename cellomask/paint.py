@@ -19,6 +19,14 @@ Gestures (the bow found in the depth, bow.py):
 Playing never looks like either: the bow crosses the strings nearly square.
 Which way the bow points comes from where its middle is, not from telling the
 frog from the tip, so a swapped frog/tip does not swap start and stop.
+
+Eraser: the bow flipped like a pencil, pointing at the cello: along the
+strings (|angle| > 35°), leaning well out of the cello's plane (|tilt| > 25°),
+its free end at the wood and the held end sticking out (> 20 cm further from
+the plane). The end at the cello then wipes the paint instead of laying it.
+Recorded on the stage: 0% of the frames of normal playing read as that,
+78-100% of the frames with the bow flipped. Whichever end the cellist holds,
+the end at the cello is the eraser (the tracker names the held end "frog").
 """
 
 import math
@@ -59,6 +67,9 @@ class BowPainter:
                  above_m=0.10, gap_s=0.5, reach=0.6, bristles=44, smooth=0.3, seed=0):
         self.W, self.H = size
         self.smooth = smooth            # brush position: weight of the newest frame
+        self.erasing = False            # the bow flipped: its end at the cello wipes
+        self.flip_since = self.unflip_since = None
+        self.eraser_w = 90              # canvas px (of 500)
         self.hold_s, self.fade_s = hold_s, fade_s
         self.vertical_deg, self.above_m, self.gap_s = vertical_deg, above_m, gap_s
         self.reach = reach              # tip offset from the cello's centre -> brush offset
@@ -104,6 +115,7 @@ class BowPainter:
         if self.pose is not None and self.pose_t0 is not None:
             hold = min(1.0, (now - self.pose_t0) / self.hold_s)
         return {"active": self.active, "fading": self.fading_since is not None,
+                "erasing": bool(self.active and self.erasing),
                 "pose": self.pose, "hold": round(hold, 2),
                 "brush": None if self.brush_uv is None else [round(v, 3) for v in self.brush_uv],
                 "painted": round(float((self.alpha > 8).mean()) * 100, 1)}
@@ -135,6 +147,41 @@ class BowPainter:
                 self.stop(now)
                 return "stop"
         return None
+
+    @staticmethod
+    def _flipped(st, cello, angle=35.0, tilt=25.0, gap=0.20):
+        """The bow pointing at the cello (see the module doc), or None when
+        the bow or the cello is not there."""
+        if not st or not st.get("ok") or cello is None or "angle" not in st or "tilt" not in st:
+            return None
+        n, C = cello["n"], cello["C"]
+        held = abs((st["frog"] - C) @ n)
+        free = abs((st["tip"] - C) @ n)
+        return abs(st["angle"]) > angle and abs(st["tilt"]) > tilt and held - free > gap
+
+    def _eraser_mode(self, flip, now, on_s=0.2, off_s=0.4):
+        """Eraser on after `on_s` of the bow flipped, off after `off_s` of it
+        not (frames without the bow change nothing)."""
+        if flip is None:
+            return
+        if flip:
+            self.unflip_since = None
+            if self.flip_since is None:
+                self.flip_since = now
+            if not self.erasing and now - self.flip_since >= on_s:
+                self.erasing, self.trail = True, []
+        else:
+            self.flip_since = None
+            if self.unflip_since is None:
+                self.unflip_since = now
+            if self.erasing and now - self.unflip_since >= off_s:
+                self.erasing, self.trail = False, []
+
+    def _erase(self):
+        """Wipe the paint along the eraser's newest piece of path."""
+        pts, _ = self._smooth()
+        line = np.round(pts * 4).astype(np.int32)
+        cv2.polylines(self.alpha, [line], False, 0, self.eraser_w, cv2.LINE_AA, shift=2)
 
     # --- the brush -----------------------------------------------------------
 
@@ -251,6 +298,7 @@ class BowPainter:
                               ).astype(np.uint8)
         self.now = now
         self.brush_uv = None
+        self._eraser_mode(self._flipped(st, cello), now)
         if not self.active:
             self.trail = []
             return fired
@@ -274,6 +322,10 @@ class BowPainter:
         p = self.p_smooth.copy()
         self.brush_uv = (p[0] / self.W, p[1] / self.H)
         self.trail = (self.trail + [(p, now)])[-5:]
+        if self.erasing:
+            if len(self.trail) >= 2:
+                self._erase()
+            return fired
         # thickness from how fast the brush moves across the canvas
         if len(self.trail) >= 2:
             (p0, t0), (p1, t1) = self.trail[-2], self.trail[-1]

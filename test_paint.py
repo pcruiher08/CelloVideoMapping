@@ -38,7 +38,9 @@ def quad(L=1.25, W=0.52):
 def bow(angle_deg, along, tip_x, tip_y, speed=0.0):
     """A bow state as bow.py gives it (only what the painter reads)."""
     tip = C + tip_x * SIDE + tip_y * AXIS + np.array([0, 0, -0.1])
-    return {"ok": True, "angle": angle_deg, "along": along, "tip": tip, "speed": speed}
+    frog = tip - 0.6 * SIDE                    # across the strings, in the cello's plane
+    return {"ok": True, "angle": angle_deg, "tilt": 0.0, "along": along, "tip": tip, "frog": frog,
+            "speed": speed}
 
 
 def main(out):
@@ -108,6 +110,30 @@ def main(out):
         step(bow(-80, 0.27, -0.25, 0.55))
     if not p.active:
         fails.append("upright with frog/tip swapped did not start")
+
+    # 5b. the eraser: paint first, then the bow flipped (along the strings,
+    # leaning out, its free end at the cello) wipes where it passes; then
+    # normal playing paints again
+    for i in range(90):
+        s = i / 30
+        step(bow(5, -0.1, 0.3 * math.sin(2 * math.pi * s / 1.6), 0.1 * math.sin(s), 0.5))
+    before = int((p.alpha > 8).sum())
+    for i in range(90):
+        s = i / 30
+        st = bow(-70, 0.35, 0.3 * math.sin(2 * math.pi * s / 1.6), 0.1 * math.sin(s))
+        st["tilt"] = -45.0
+        st["tip"] = C + st["tip"] - C + np.array([0, 0, 0.1])           # free end at the wood
+        st["frog"] = st["tip"] - 0.5 * N + 0.2 * AXIS                     # held end sticking out
+        step(st)
+        if i == 15 and not p.erasing:
+            fails.append("the flipped bow did not switch to the eraser within 0.5 s")
+    after = int((p.alpha > 8).sum())
+    if after > 0.7 * before:
+        fails.append(f"the eraser wiped little: {before} -> {after} painted px")
+    for i in range(30):
+        step(bow(5, -0.1, 0.2, 0.0, 0.5))
+    if p.erasing:
+        fails.append("still erasing after 1 s of normal playing")
 
     # 6. where the paint lands: the brush at the cello's centre is the
     # picture's centre; on the rectangle's right edge it is the right edge of

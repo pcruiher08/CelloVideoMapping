@@ -363,7 +363,7 @@ class OscOut:
 
     def send_paint(self, ps):
         """The bow painting (BowPainter.status()): /paint/active 1 while
-        painting, /paint/hold 0-1 how far a start / stop gesture has been held,
+        painting, /paint/erasing 1 while the flipped bow erases, /paint/hold 0-1 how far a start / stop gesture has been held,
         /paint/brush u v where the brush is on the cello's rectangle (0-1:
         u left to right, v scroll to endpin; only while painting with the bow
         found)."""
@@ -373,6 +373,7 @@ class OscOut:
         try:
             c.send_message("/paint/active", 1.0 if ps["active"] else 0.0)
             c.send_message("/paint/hold", float(ps["hold"]))
+            c.send_message("/paint/erasing", 1.0 if ps.get("erasing") else 0.0)
             if ps["brush"] is not None:
                 c.send_message("/paint/brush", [float(ps["brush"][0]), float(ps["brush"][1])])
         except Exception as e:

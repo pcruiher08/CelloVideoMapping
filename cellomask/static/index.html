@@ -189,7 +189,7 @@
       <label class="check"><input type="checkbox" id="paint_behind"> Paint behind TouchDesigner's graphics (its black parts show the paint)</label>
       <p class="sub" id="paintStatus" style="margin:6px 0 4px">–</p>
       <div class="row" style="gap:6px"><button class="btn" id="paintStart" style="flex:1">Start</button><button class="btn" id="paintStop" style="flex:1">Stop</button><button class="btn" id="paintClear" style="flex:1">Clear</button></div>
-      <p class="hint">The bow's tip is a brush: streaky ribbons of paint that pile up on the cello and stay on the wood as it moves. <b>Start:</b> hold the bow upright beside the cello (along the strings, tip up) for 2 s. <b>Stop:</b> hold it pointing down beside the cello for 2 s; the painting fades out. Hold it beside the cello, not in front of the strings, and keep the tip above the floor. Faster strokes paint wider; down-bows warmer, up-bows cooler. OSC: /paint/active, /paint/hold (0–1 while a gesture is held), /paint/brush u v (0–1 on the cello).</p>
+      <p class="hint">The bow's tip is a brush: streaky ribbons of paint that pile up on the cello and stay on the wood as it moves. <b>Start:</b> hold the bow upright beside the cello (along the strings, tip up) for 2 s. <b>Stop:</b> hold it pointing down beside the cello for 2 s; the painting fades out. Hold it beside the cello, not in front of the strings, and keep the tip above the floor. Faster strokes paint wider; down-bows warmer, up-bows cooler. <b>Erase:</b> flip the bow like a pencil and point it at the cello (the end at the wood wipes the paint). OSC: /paint/active, /paint/erasing, /paint/hold (0–1 while a gesture is held), /paint/brush u v (0–1 on the cello).</p>
     </section>
 
     <section id="tunerSec">
@@ -439,7 +439,7 @@ for (const act of ['start', 'stop', 'clear']) {
 function renderPaint() {
   const pt = state.projector && state.projector.paint; if (!pt) return;
   const held = pt.pose ? ` · holding ${pt.pose === 'up' ? 'upright (start)' : 'down (stop)'} ${Math.round(100 * pt.hold)}%` : '';
-  $('#paintStatus').innerHTML = (pt.active ? `<span class="in">Painting</span> · ${pt.painted}% of the cello painted`
+  $('#paintStatus').innerHTML = (pt.active ? `<span class="in">${pt.erasing ? 'Erasing' : 'Painting'}</span> · ${pt.painted}% of the cello painted`
     : pt.fading ? '<span class="near">Fading out</span>'
     : 'Not painting: hold the bow upright beside the cello for 2 s') + held;
 }
