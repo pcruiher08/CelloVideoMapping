@@ -109,6 +109,37 @@ The bow tracker runs in its own process, so it does not slow the projection.
 | `/vibrato/rate` | Hz of the vibrato (0 without vibrato) |
 | `/vibrato/extent` | cents of the vibrato |
 
+### Bow painting
+
+| Address | Value |
+|---|---|
+| `/paint/active` | 1 while painting, else 0 |
+| `/paint/hold` | 0–1, how far a start or stop gesture has been held (0 when none) |
+| `/paint/brush` | u v, where the brush is on the cello (0–1: u left to right, v scroll to endpin); only while painting with the bow found |
+
+## Painting on the cello with the bow
+
+The app can paint on the cello itself: the bow's tip is a brush that lays
+thick, streaky ribbons of paint in blues, violets and magentas. The paint
+piles up and stays where it was put on the wood as the cello moves, and it
+drifts slowly.
+
+- **Start:** hold the bow **upright beside the cello** (along the strings,
+  tip up) for 2 seconds.
+- **Paint:** play or draw. Faster strokes paint wider ribbons; down-bows are
+  warmer, up-bows cooler, and the colours drift over time.
+- **Stop:** hold the bow **pointing down beside the cello** for 2 seconds.
+  The painting fades out over about 3 seconds.
+- Hold the bow beside the cello, not in front of the strings, and keep the tip
+  above the floor: the bow tracker ignores both places. Normal playing never
+  triggers a gesture.
+- **By default the paint goes behind TouchDesigner's graphics:** it shows
+  where TouchDesigner's picture is black, and its bright graphics cover it.
+  Untick **Paint behind TouchDesigner's graphics** to put it on top.
+- The web page (TouchDesigner section) has **Start**, **Stop** and **Clear**
+  buttons for rehearsal, the gesture's progress, and a switch to turn the
+  painting off.
+
 ## What the app does on its own
 
 - **3D tracking of the cello:** a 3D scan of the cello is fitted to the
