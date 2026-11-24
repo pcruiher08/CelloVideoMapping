@@ -3095,10 +3095,10 @@
 					"patching_rect": [
 						1560.0,
 						82.0,
-						620.0,
+						700.0,
 						20.0
 					],
-					"text": "peace = ping-pong delay, thumbs up = overdrive; or click the toggles. Out: dac~ 2 3 4 5 (L 2+4, R 3+5)"
+					"text": "peace = ping-pong delay, thumbs up = overdrive; or click the toggles. Out: dac~ 3 4 5 6 = LF RF LB RB (echoes L on 3+5, R on 4+6)"
 				}
 			},
 			{
@@ -3544,7 +3544,7 @@
 						110.0,
 						22.0
 					],
-					"text": "dac~ 2 3 4 5"
+					"text": "dac~ 3 4 5 6"
 				}
 			},
 			{
