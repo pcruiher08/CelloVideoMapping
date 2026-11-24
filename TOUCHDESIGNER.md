@@ -39,10 +39,12 @@ Keys in the projector window: **f** covers or uncovers the screen,
 
 ## TouchDesigner → the cello (video in)
 
-- **Same Mac:** add a **Syphon Spout Out TOP** named `visuales_cello` after the
-  final visual. The zip comes set to use it.
-- **Another computer:** add an **NDI Out TOP**, then press **Find NDI / Syphon
-  senders** in the web page and pick it in the gallery. Use a wired network.
+- **NDI:** add an **NDI Out TOP** after the final visual, then press **Find
+  NDI / Syphon senders** in the web page and pick it in the gallery. The app
+  remembers it after that. Works on the same Mac or from another computer (use
+  a wired network).
+- **Syphon (same Mac only):** a **Syphon Spout Out TOP** works the same way.
+- The zip starts with a test grid on the cello until you pick a sender.
 - **Format:** a portrait texture of about 1:2.4 fits the cello best, at
   **about 800 x 1920 or larger** (the projector shows the whole cello about
   1650 pixels tall; the app uses up to 2048 pixels of the image's long side).
@@ -80,7 +82,9 @@ values are floats, sent every tracked frame (about 20–30 per second).
 | `/bow/present` | 1 when the bow is found, else 0 |
 | `/bow/angle` | degrees to the strings in the cello's plane: 0 = square to them, + = tip towards the scroll |
 | `/bow/tilt` | degrees out of the cello's plane (leans towards the outer or inner strings) |
-| `/bow/speed` | m/s along the bow: + = down-bow, − = up-bow, 0 = still |
+| `/bow/speed` | m/s along the bow: + = down-bow, − = up-bow, 0 = still (from how the bow slides through the strings) |
+| `/bow/contact` | where on the bow the strings are: 0 = at the frog, 1 = at the tip (not sent while lifted) |
+| `/bow/on_strings` | 1 while the bow is on the strings, 0 when lifted off them (speed then reads 0) |
 | `/bow/along` | metres along the strings where the bow crosses, from the cello's centre (+ = towards the scroll; sul ponticello to sul tasto) |
 | `/bow/tip`, `/bow/frog` | x y z in metres (the bow as a wand): origin = the cello's centre, x right, y up, z towards the camera |
 | `/bow/dir` | x y z, unit vector from frog to tip |
@@ -126,12 +130,15 @@ The bow tracker runs in its own process, so it does not slow the projection.
 
 - **The light freezes for a few seconds:** the Kinect's USB connection dropped.
   It reconnects by itself; plug it directly into the Mac.
-- **The light is offset from the cello:** the Kinect or projector moved. Press
-  **Calibrate 3D**. If neither moved but things around the stage did (boards,
-  stands), the app may take that for the Kinect moving; tell it the room
-  changed instead (no calibration needed):
-  `curl -X POST http://127.0.0.1:8000/api/projector/room_changed`
+- **The light drifts off the cello:** if boards, stands or the backdrop were
+  moved or removed but the Kinect and projector were not, press **Room
+  changed** (Projector section). The app took the moved surroundings for the
+  Kinect moving; this resets that, with no calibration. If the Kinect or the
+  projector really moved, press **Calibrate 3D**.
 - **Nothing on the projector:** the projector must be set to extend. Pick the
   right screen under **Screen**, or press **f** in the projector window.
-- **The picture is a "waiting" card:** TouchDesigner isn't sending yet. Check
-  the Syphon Spout Out TOP's name, then press **Find NDI / Syphon senders**.
+- **The cello is dark, or shows a "waiting for …" card:** the app is set to a
+  sender that isn't sending. The card is nearly black on the cello. The web
+  page's TouchDesigner section says **Waiting for …** instead of
+  **Receiving …**. Check the NDI Out TOP is active, press **Find NDI / Syphon
+  senders**, and pick the sender in the gallery.

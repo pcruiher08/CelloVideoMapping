@@ -158,6 +158,9 @@
       <button class="btn" id="autoAlign" style="width:100%;margin-top:8px">Auto-align the light (cello still, ~5 s)</button>
       <p class="sub" id="alignStatus" style="margin:4px 0 0"></p>
       <p class="hint">Lights the cello white, sees where the light lands, and shifts it onto the cello (Shift X/Y). Fixes what the calibration leaves at the cello's spot, or the camera being knocked slightly.</p>
+      <button class="btn" id="roomChanged" style="width:100%;margin-top:8px">Room changed (the light drifted off the cello)</button>
+      <p class="sub" id="roomStatus" style="margin:4px 0 0"></p>
+      <p class="hint">After boards, stands or the backdrop were moved or taken away (but not the Kinect or the projector): the Kinect takes the room as it is now as its reference, and the light goes back to where the calibration put it. Without this, moved surroundings read as the Kinect moving, and the light slides off the cello. If the Kinect or the projector really moved, Calibrate 3D instead.</p>
       <img id="calibView" alt="What the camera saw when calibrating" hidden style="width:100%;margin-top:8px;border-radius:8px;border:1px solid var(--line)">
       <div class="seg" id="projModeSeg" style="margin-top:10px">
         <button data-v="content">Content</button>
@@ -181,7 +184,7 @@
       <div class="row"><label for="osc_port">Port</label><input type="number" id="osc_port" min="1" max="65535" style="width:100%"></div>
       <p class="hint">OSC out, every frame, for an <b>OSC In CHOP</b>: /cello/present x y angle size distance lean turn covered, /tuner/freq note cents level, /vibrato/rate extent (tuner values while the tuner runs).</p>
       <p class="sub" id="bowStatus" style="margin:10px 0 4px">–</p>
-      <p class="hint">The bow, found in the depth (no markers; drawn in the Mask view): /bow/present, /bow/angle (to the strings, 0 = square, + = tip towards the scroll), /bow/tilt, /bow/speed (m/s, + = down-bow), /bow/along, and as a wand /bow/tip, /bow/frog, /bow/dir, /bow/tip_velocity (x y z in m from the cello's centre: x right, y up, z towards the camera), /bow/length.</p>
+      <p class="hint">The bow, found in the depth (no markers; drawn in the Mask view): /bow/present, /bow/angle (to the strings, 0 = square, + = tip towards the scroll), /bow/tilt, /bow/speed (m/s, + = down-bow), /bow/contact (where on the bow the strings are: 0 frog, 1 tip), /bow/on_strings (1 on the strings, 0 lifted), /bow/along, and as a wand /bow/tip, /bow/frog, /bow/dir, /bow/tip_velocity (x y z in m from the cello's centre: x right, y up, z towards the camera), /bow/length.</p>
     </section>
 
     <section id="tunerSec">
@@ -531,6 +534,14 @@ $('#autoAlign').addEventListener('click', async () => {
     const j = await r.json();
     $('#alignStatus').innerHTML = j.ok ? `<span class="in">Aligned</span>: ${esc(j.message)}` : `<span class="near">${esc(j.message || j.detail || 'failed')}</span>`;
   } catch (e) { $('#alignStatus').textContent = 'failed: ' + e; }
+  b.disabled = false;
+});
+$('#roomChanged').addEventListener('click', async () => {
+  const b = $('#roomChanged'); b.disabled = true; $('#roomStatus').textContent = 'taking the room as it is now…';
+  try {
+    await post('/api/projector/room_changed', {});
+    $('#roomStatus').innerHTML = '<span class="in">Done</span>: the room as it is now is the reference; the light follows the calibration again';
+  } catch (e) { $('#roomStatus').innerHTML = `<span class="near">${esc(e.message || String(e))}</span>`; }
   b.disabled = false;
 });
 $('#calibMarkers').addEventListener('click', e => { e.preventDefault(); calibrate('markers'); });
