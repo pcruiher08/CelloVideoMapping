@@ -360,3 +360,20 @@ class OscOut:
             c.send_message("/bow/tip_velocity", stage(st["tip_vel"], point=False))
         except Exception as e:
             self.error = repr(e)
+
+    def send_paint(self, ps):
+        """The bow painting (BowPainter.status()): /paint/active 1 while
+        painting, /paint/hold 0-1 how far a start / stop gesture has been held,
+        /paint/brush u v where the brush is on the cello's rectangle (0-1:
+        u left to right, v scroll to endpin; only while painting with the bow
+        found)."""
+        c = self.client
+        if c is None:
+            return
+        try:
+            c.send_message("/paint/active", 1.0 if ps["active"] else 0.0)
+            c.send_message("/paint/hold", float(ps["hold"]))
+            if ps["brush"] is not None:
+                c.send_message("/paint/brush", [float(ps["brush"][0]), float(ps["brush"][1])])
+        except Exception as e:
+            self.error = repr(e)

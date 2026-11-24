@@ -26,6 +26,7 @@ from .cello3d import CelloPlane, front_face
 from .predict import PlanePredictor, PosePredictor, apply_axis, apply_mask
 from .shape import LearnedShape, ShapeMemory, close_across
 from .bowproc import BowProcess
+from .paint import BowPainter
 from .model3d import CelloModel, depth_refine
 from .live import LiveMedia, OscOut, ndi_sources, open_live, syphon_sources
 from .composite import composite, debug_overlay, mask_roi, shape_alpha
@@ -73,6 +74,8 @@ DEFAULTS = {
     "osc_host": "",          # TouchDesigner's address for the cello's state over OSC ("" = off)
     "osc_port": 9000,
     "bow": True,             # find the bow in the depth (angle, speed, wand) and send it over OSC
+    "paint": True,           # paint on the cello with the bow (hold it upright 2 s to start, pointing down 2 s to stop)
+    "paint_behind": True,    # the painting under TouchDesigner's graphics (its dark parts see-through), else on top
     "display_warp": True,
     "motion_inset": 20.0,    # extra edge inset while the cello moves: mm per m/s (up to 12 mm; 0 = off)
     "yolo_every": 3,         # with the scan locked on, detect on 1 frame in this many; depth alone between (1 = every frame)    # move the light at the display's 60 Hz between tracked frames
@@ -505,6 +508,8 @@ class Pipeline(threading.Thread):
         self.bow = BowProcess()        # the bow, from the depth (own thread: bow_loop; own process: bowproc)
         self.bow_share = 0.0           # fraction of depth frames the bow was found in (smoothed)
         self.bow_rec = None            # debug: the bow tracker's inputs while /api/debug/bowrec records
+        self.painter = BowPainter()    # the bow as a brush on the cello (paint.py)
+        self.paint_lock = threading.Lock()
         self.seen = None               # the cello as segmented this frame (for learning)
         self.covered = 0.0             # fraction of the cello covered (hand, arm, bow)
         self.screens, self.screen_index = [], None   # displays, and the projector window's
@@ -959,6 +964,23 @@ class Pipeline(threading.Thread):
             axis = self.model.axis_px(Kf) or axis
         quad = self.update_3d(frame, seen, axis, pkt, s, now)    # the plane from the cello's own depth
         tick("axis + 3D")
+        if s["paint"] or self.painter.active or self.painter.fading_since is not None:
+            # the bow as a brush: paint laid in the picture's own space, on
+            # top of TouchDesigner's image, so it stays where it was put on
+            # the wood (gestures only while painting is on)
+            try:
+                with self.paint_lock:
+                    K3 = None if self.view3d is None else self.view3d[0]
+                    ev = self.painter.update(self.bow.state if s["paint"] else None, self.cello_frame(),
+                                             quad, K3, now)
+                    repl = self.painter.compose(repl, behind=s["paint_behind"])
+                if ev:
+                    print(f"bow painting: {ev}")
+                if self.osc.client is not None:
+                    self.osc.send_paint(self.painter.status(now))
+            except Exception as e:               # never let the painting stop the show
+                print(f"paint: {e!r}")
+            tick("paint")
         if self.osc.client is not None:
             self.osc.send(self, frame.shape, axis,
                           self.tuner.snapshot() if self.tuner is not None and self.tuner.running else None)
@@ -1826,6 +1848,7 @@ class Pipeline(threading.Thread):
                 "depth_only": round(100 * self.depth_only_share),
                 "scan_fitted": round(100 * self.scan_share),
                 "bow": self.bow_state(),
+                "paint": self.painter.status(),
                 "phone": self.phone_state(),
                 "kinect": self.depthcam_state(),
                 "iphone": {"live": IPHONE.live, "fps": round(IPHONE.fps, 1),
@@ -2367,6 +2390,22 @@ def build_app(pipe):
         with open(os.path.join(folder, "meta.pkl"), "wb") as f:
             pickle.dump({"frames": clip["meta"], "scan": pipe.model.path}, f)
         return {"dir": folder, "frames": clip["n"]}
+
+    @app.post("/api/paint")
+    def paint(body: dict = Body(default={})):
+        """The bow painting by hand (rehearsal, or if a gesture is missed):
+        action start | stop (fades out) | clear."""
+        act = body.get("action")
+        with pipe.paint_lock:
+            if act == "start":
+                pipe.painter.start()
+            elif act == "stop":
+                pipe.painter.stop()
+            elif act == "clear":
+                pipe.painter.clear()
+            elif act is not None:
+                raise HTTPException(400, "action: start, stop or clear")
+            return pipe.painter.status()
 
     @app.post("/api/projector/room_changed")
     def room_changed():

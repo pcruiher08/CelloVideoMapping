@@ -185,6 +185,11 @@
       <p class="hint">OSC out, every frame, for an <b>OSC In CHOP</b>: /cello/present x y angle size distance lean turn covered, /tuner/freq note cents level, /vibrato/rate extent (tuner values while the tuner runs).</p>
       <p class="sub" id="bowStatus" style="margin:10px 0 4px">–</p>
       <p class="hint">The bow, found in the depth (no markers; drawn in the Mask view): /bow/present, /bow/angle (to the strings, 0 = square, + = tip towards the scroll), /bow/tilt, /bow/speed (m/s, + = down-bow), /bow/contact (where on the bow the strings are: 0 frog, 1 tip), /bow/on_strings (1 on the strings, 0 lifted), /bow/along, and as a wand /bow/tip, /bow/frog, /bow/dir, /bow/tip_velocity (x y z in m from the cello's centre: x right, y up, z towards the camera), /bow/length.</p>
+      <label class="check" style="margin-top:12px"><input type="checkbox" id="paint"> Paint on the cello with the bow</label>
+      <label class="check"><input type="checkbox" id="paint_behind"> Paint behind TouchDesigner's graphics (its black parts show the paint)</label>
+      <p class="sub" id="paintStatus" style="margin:6px 0 4px">–</p>
+      <div class="row" style="gap:6px"><button class="btn" id="paintStart" style="flex:1">Start</button><button class="btn" id="paintStop" style="flex:1">Stop</button><button class="btn" id="paintClear" style="flex:1">Clear</button></div>
+      <p class="hint">The bow's tip is a brush: streaky ribbons of paint that pile up on the cello and stay on the wood as it moves. <b>Start:</b> hold the bow upright beside the cello (along the strings, tip up) for 2 s. <b>Stop:</b> hold it pointing down beside the cello for 2 s; the painting fades out. Hold it beside the cello, not in front of the strings, and keep the tip above the floor. Faster strokes paint wider; down-bows warmer, up-bows cooler. OSC: /paint/active, /paint/hold (0–1 while a gesture is held), /paint/brush u v (0–1 on the cello).</p>
     </section>
 
     <section id="tunerSec">
@@ -355,6 +360,8 @@ function renderControls() {
     el.nextElementSibling.textContent = s[k];
   }
   $('#matte').checked = s.matte; $('#flip').checked = s.flip;
+  $('#paint').checked = s.paint;
+  $('#paint_behind').checked = s.paint_behind;
   if (document.activeElement !== $('#osc_host')) $('#osc_host').value = s.osc_host;
   if (document.activeElement !== $('#osc_port')) $('#osc_port').value = s.osc_port;
 }
@@ -422,6 +429,20 @@ for (const k of SLIDERS) {
   $('#' + k).addEventListener('input', e => { e.target.nextElementSibling.textContent = e.target.value; set({ [k]: parseFloat(e.target.value) }); });
 }
 $('#matte').addEventListener('change', e => set({ matte: e.target.checked }));
+$('#paint').addEventListener('change', e => set({ paint: e.target.checked }));
+$('#paint_behind').addEventListener('change', e => set({ paint_behind: e.target.checked }));
+for (const act of ['start', 'stop', 'clear']) {
+  $('#paint' + act[0].toUpperCase() + act.slice(1)).addEventListener('click', async () => {
+    try { state.projector = { ...(state.projector || {}), paint: await post('/api/paint', { action: act }) }; renderPaint(); } catch {}
+  });
+}
+function renderPaint() {
+  const pt = state.projector && state.projector.paint; if (!pt) return;
+  const held = pt.pose ? ` · holding ${pt.pose === 'up' ? 'upright (start)' : 'down (stop)'} ${Math.round(100 * pt.hold)}%` : '';
+  $('#paintStatus').innerHTML = (pt.active ? `<span class="in">Painting</span> · ${pt.painted}% of the cello painted`
+    : pt.fading ? '<span class="near">Fading out</span>'
+    : 'Not painting: hold the bow upright beside the cello for 2 s') + held;
+}
 $('#flip').addEventListener('change', e => set({ flip: e.target.checked }));
 $('#viewSeg').addEventListener('click', e => { if (e.target.dataset.v) { view = e.target.dataset.v; localStorageSet('view', view); renderViews(); } });
 
@@ -466,6 +487,7 @@ function renderProjector() {
     ? '<span class="near">Outline not learned</span>: with the cello alone and still, press Learn (Calibrate 3D also learns it)'
     : sh.fitted ? `<span class="in">Learned outline fitted</span> (${Math.round(100 * sh.inliers)}% of the visible edge on it)`
     : '<span class="near">Learned outline not fitting</span>: using the live mask (cello moved far, or relearn)';
+  renderPaint();
   const bw = p.bow;
   if (bw) $('#bowStatus').innerHTML = bw.present
     ? `<span class="in">Bow</span> · angle ${bw.angle !== undefined ? (bw.angle > 0 ? '+' : '') + bw.angle + '°' : '–'} · speed ${bw.speed > 0 ? '+' : ''}${bw.speed} m/s · found in ${bw.found}% of frames`
