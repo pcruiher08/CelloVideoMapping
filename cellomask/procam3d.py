@@ -184,6 +184,58 @@ def solve_projector(X, p, proj_size, rounds=3):
             "median": float(np.median(err)), "inliers": float(keep.mean()), "n": int(len(X))}
 
 
+def keep_capture(folder, X, p, K, keep=8):
+    """Save a calibration capture's points (lidar_<time>.npz) for pooling
+    later ones with; the oldest beyond `keep` are removed."""
+    import glob
+    np.savez_compressed(os.path.join(folder, time.strftime("lidar_%Y%m%d_%H%M%S.npz")), X=X, p=p, K=K)
+    old = sorted(glob.glob(os.path.join(folder, "lidar_2*.npz")))[:-keep]
+    for f in old:
+        try:
+            os.remove(f)
+        except OSError:
+            pass
+
+
+def solve_pooled(X, p, K, proj_size, folder, max_age_h=12.0, max_median=4.0, min_inliers=0.75):
+    """The projector from this capture's points together with the recent
+    ones kept in `folder` (same camera intrinsics, younger than
+    `max_age_h`): (solution, n captures) or (None, 0).
+
+    One capture of the cello and a board behind it (two parallel surfaces)
+    left the focal length, the lens centre and the distance trading off,
+    and solved to an impossible lens; pooled with an earlier capture of the
+    same rig (the cellist, the floor: other depths and angles) it solved to
+    3.8 px over 9640 points, and put the projector where it was measured.
+    A projector moved between captures makes the pooled points disagree, so
+    the fit must be tight (`max_median` px, `min_inliers`) to be used."""
+    import glob
+    Xs, ps, n = [X], [p], 1
+    now = time.time()
+    for f in sorted(glob.glob(os.path.join(folder, "lidar_2*.npz")))[::-1]:
+        if now - os.path.getmtime(f) > max_age_h * 3600:
+            continue
+        try:
+            z = np.load(f)
+            if not np.allclose(z["K"], K):
+                continue
+            if any(len(z["X"]) == len(x) and np.allclose(z["X"], x) for x in Xs):
+                continue                         # this capture itself
+            Xs.append(z["X"])
+            ps.append(z["p"])
+            n += 1
+        except Exception:
+            continue
+    if n < 2:
+        return None, 0
+    sol = solve_projector(np.concatenate(Xs), np.concatenate(ps), proj_size)
+    if sol is None or implausible3d(sol, proj_size):
+        return None, 0
+    if sol["median"] > max_median or sol["inliers"] < min_inliers:
+        return None, 0
+    return sol, n
+
+
 def implausible3d(sol, proj_size):
     """Why a solved projector cannot be real, or None. Guards against a fit
     on weak stripes or a too-flat scene."""

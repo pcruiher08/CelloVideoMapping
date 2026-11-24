@@ -33,7 +33,8 @@ from .live import LiveMedia, OscOut, ndi_sources, open_live, syphon_sources
 from .composite import composite, debug_overlay, mask_roi, shape_alpha
 from .iphone import IPHONE, depth_view
 from .kinect import HELPER as KINECT_HELPER, KinectSource
-from .procam3d import Procam3D, correspondences, implausible3d, solve_projector, stable_depth
+from .procam3d import (Procam3D, correspondences, implausible3d, keep_capture, solve_pooled,
+                       solve_projector, stable_depth)
 from .relocate import PhoneTracker
 from .projector import (Calibration, decode_gray, detect, fit, fit_dense, gray_bits, implausible,
                         gray_pattern, marker_pattern, test_grid)
@@ -1771,6 +1772,18 @@ class Pipeline(threading.Thread):
         if not why and len(X) < 2000 and (sol["inliers"] < 0.75 or sol["median"] > 3.0):
             why = (f"only {len(X)} points, and the fit is loose ({100 * sol['inliers']:.0f}% agree, "
                    f"median {sol['median']:.1f} px): light more of the scene with something matte and pale")
+        pooled = 0
+        if why or sol["median"] > 4.0:
+            # one capture can be too flat to pin the projector down (the cello
+            # and a board behind it); with today's earlier captures of the same
+            # rig it often is not (procam3d.solve_pooled)
+            psol, pooled = solve_pooled(X, p, K, self.proj_size, dbg)
+            if psol is not None:
+                sol, why = psol, None
+        try:
+            keep_capture(dbg, X, p, K)
+        except OSError as e:
+            print(f"calibration capture not kept: {e!r}")
         if why:
             return fail(f"3D calibration rejected ({why}); the previous one is kept")
         self.procam = Procam3D(**sol, proj_size=self.proj_size, cam_K=K, cam_size=(ww, hh))
@@ -1796,7 +1809,8 @@ class Pipeline(threading.Thread):
         self.plane_pred.reset()
         self.pose_pred.reset()
         return {"ok": True, "markers": sol["n"], "total": 0, "error": round(sol["rms"], 2),
-                "message": f"3D calibration: {self.procam.summary()}. "
+                "message": f"3D calibration: {self.procam.summary()}"
+                           + (f" (pooled with {pooled - 1} earlier capture{'s' if pooled > 2 else ''})" if pooled else "") + ". "
                            f"Flat mapping: {flat['message']}"
                            + (". Cello outline learned" if learned else "")
                            + (f"; {scanned}" if scanned else "")}
