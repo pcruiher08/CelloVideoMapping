@@ -150,9 +150,10 @@ With the fingering hand beside the cello's neck, **in the white gloves**:
 
 The app reads the glove's outline in the Kinect's full-resolution image (bare
 hands are not seen; white things that were already in the zone are ignored).
-It sends `/fx/pingpong`, `/fx/overdrive` and `/fx/mono` (1 on, 0 off) to Max
+It sends `/fx/pingpong` and `/fx/overdrive` (1 on, 0 off; each on its own, so both
+can be on) to Max
 on `127.0.0.1:7400`, on every change and every 2 s. The web page
-(TouchDesigner section) shows the sign it sees and has buttons for all three.
+(TouchDesigner section) shows the sign it sees and has buttons for both.
 
 Max (`Interfaz_Cello_Performance.maxpat`, in this repository's `show/max/`)
 turns them into **MIDI CC on the "From Max 1" port, channel 1**:
@@ -161,7 +162,6 @@ turns them into **MIDI CC on the "From Max 1" port, channel 1**:
 |---|---|---|
 | ping-pong delay | 20 | 127 on, 0 off |
 | overdrive | 21 | 127 on, 0 off |
-| mono | 22 | 127 on, 0 off |
 
 In Ableton Live: in **Settings → Link, Tempo & MIDI**, turn on **Remote** for
 the input "from Max 1". Then press **MIDI** (top right) to enter MIDI Map

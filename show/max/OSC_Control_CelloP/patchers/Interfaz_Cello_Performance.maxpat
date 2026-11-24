@@ -3083,7 +3083,7 @@
 						720.0,
 						20.0
 					],
-					"text": "EFFECTS BY HAND SIGNS -> ABLETON  (cello app -> udpreceive 7400: /fx/pingpong, /fx/overdrive, /fx/mono  1|0)"
+					"text": "EFFECTS BY HAND SIGNS -> ABLETON  (cello app -> udpreceive 7400: /fx/pingpong, /fx/overdrive  1|0)"
 				}
 			},
 			{
@@ -3098,7 +3098,7 @@
 						760.0,
 						20.0
 					],
-					"text": "-> MIDI CC to Live on 'From Max 1', channel 1: ping-pong CC 20, overdrive CC 21, mono CC 22 (127 on, 0 off). In Live: MIDI Map each effect's on/off to its CC."
+					"text": "-> MIDI CC to Live on 'From Max 1', channel 1: ping-pong CC 20, overdrive CC 21 (127 on, 0 off; both can be on). In Live: MIDI Map each effect's on/off to its CC."
 				}
 			},
 			{
@@ -3124,16 +3124,15 @@
 					"id": "obj-fx-route",
 					"maxclass": "newobj",
 					"numinlets": 2,
-					"numoutlets": 4,
+					"numoutlets": 3,
 					"patching_rect": [
 						1560.0,
 						155.0,
 						270.0,
 						22.0
 					],
-					"text": "route /fx/overdrive /fx/pingpong /fx/mono",
+					"text": "route /fx/overdrive /fx/pingpong",
 					"outlettype": [
-						"",
 						"",
 						"",
 						""
@@ -3277,39 +3276,6 @@
 			},
 			{
 				"box": {
-					"id": "obj-fx-monol",
-					"maxclass": "comment",
-					"numinlets": 1,
-					"numoutlets": 0,
-					"patching_rect": [
-						1850.0,
-						190.0,
-						120.0,
-						20.0
-					],
-					"text": "mono (dry, all 4)"
-				}
-			},
-			{
-				"box": {
-					"id": "obj-fx-monot",
-					"maxclass": "toggle",
-					"numinlets": 1,
-					"numoutlets": 1,
-					"outlettype": [
-						"int"
-					],
-					"parameter_enable": 0,
-					"patching_rect": [
-						1850.0,
-						212.0,
-						24.0,
-						24.0
-					]
-				}
-			},
-			{
-				"box": {
 					"id": "obj-fx-odcc127",
 					"maxclass": "newobj",
 					"numinlets": 2,
@@ -3372,39 +3338,6 @@
 						22.0
 					],
 					"text": "ctlout \"From Max 1\" 20 1"
-				}
-			},
-			{
-				"box": {
-					"id": "obj-fx-monocc127",
-					"maxclass": "newobj",
-					"numinlets": 2,
-					"numoutlets": 1,
-					"outlettype": [
-						"int"
-					],
-					"patching_rect": [
-						1850.0,
-						250.0,
-						45.0,
-						22.0
-					],
-					"text": "* 127"
-				}
-			},
-			{
-				"box": {
-					"id": "obj-fx-monoccout",
-					"maxclass": "newobj",
-					"numinlets": 3,
-					"numoutlets": 0,
-					"patching_rect": [
-						1850.0,
-						285.0,
-						140.0,
-						22.0
-					],
-					"text": "ctlout \"From Max 1\" 22 1"
 				}
 			}
 		],
@@ -5044,18 +4977,6 @@
 			{
 				"patchline": {
 					"source": [
-						"obj-fx-route",
-						2
-					],
-					"destination": [
-						"obj-fx-monot",
-						0
-					]
-				}
-			},
-			{
-				"patchline": {
-					"source": [
 						"obj-fx-odt",
 						0
 					],
@@ -5097,30 +5018,6 @@
 					],
 					"destination": [
 						"obj-fx-ppccout",
-						0
-					]
-				}
-			},
-			{
-				"patchline": {
-					"source": [
-						"obj-fx-monot",
-						0
-					],
-					"destination": [
-						"obj-fx-monocc127",
-						0
-					]
-				}
-			},
-			{
-				"patchline": {
-					"source": [
-						"obj-fx-monocc127",
-						0
-					],
-					"destination": [
-						"obj-fx-monoccout",
 						0
 					]
 				}
