@@ -3098,7 +3098,7 @@
 						760.0,
 						20.0
 					],
-					"text": "-> MIDI CC to Live on 'From Max 1', channel 1: ping-pong CC 20, overdrive CC 21 (127 on, 0 off; both can be on). In Live: MIDI Map each effect's on/off to its CC."
+					"text": "-> MIDI CC to Live on 'IAC Driver Bus 1', channel 1: ping-pong CC 20, overdrive CC 21 (127 on, 0 off; both can be on). In Live: Remote on for IAC Driver (Bus 1), then MIDI Map each effect's on/off."
 				}
 			},
 			{
@@ -3301,10 +3301,10 @@
 					"patching_rect": [
 						1560.0,
 						285.0,
-						140.0,
+						160.0,
 						22.0
 					],
-					"text": "ctlout \"From Max 1\" 21 1"
+					"text": "ctlout \"IAC Driver Bus 1\" 21 1"
 				}
 			},
 			{
@@ -3334,10 +3334,10 @@
 					"patching_rect": [
 						1720.0,
 						285.0,
-						140.0,
+						160.0,
 						22.0
 					],
-					"text": "ctlout \"From Max 1\" 20 1"
+					"text": "ctlout \"IAC Driver Bus 1\" 20 1"
 				}
 			}
 		],
