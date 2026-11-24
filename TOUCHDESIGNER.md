@@ -140,6 +140,25 @@ drifts slowly.
   buttons for rehearsal, the gesture's progress, and a switch to turn the
   painting off.
 
+## Hand signs switch effects in Max
+
+With the fingering hand beside the cello's neck, **in the white gloves**:
+
+- **✌️ peace**, held about 1 s, switches the **ping-pong delay** on or off.
+- **👍 thumbs up**, held about 1 s, switches the **overdrive** on or off.
+- Lower the hand before the same sign switches it back.
+
+The app reads the glove's outline in the Kinect's full-resolution image, so
+bare hands are not seen. It sends `/fx/pingpong` and `/fx/overdrive` (1 on,
+0 off) to Max on `127.0.0.1:7400`, on every change and every 2 s. The web page
+(TouchDesigner section) shows the sign it sees and has buttons to switch the
+effects by hand.
+
+In Max, `Interfaz_Cello_Performance.maxpat` (in this repository's `show/max/`)
+has the effects: the cello from input 1 through an overdrive and a ping-pong
+delay, out on outputs 2–5 (the console sends them to the speakers), switched
+by `udpreceive 7400` or by its two toggles.
+
 ## What the app does on its own
 
 - **3D tracking of the cello:** a 3D scan of the cello is fitted to the
@@ -161,6 +180,12 @@ drifts slowly.
 
 - **The light freezes for a few seconds:** the Kinect's USB connection dropped.
   It reconnects by itself; plug it directly into the Mac.
+- **The Mac locked during the show:** `show.sh` keeps it awake while it runs
+  (macOS `caffeinate`); start the show with it, not `run.sh`.
+- **Calibrate 3D is rejected ("lens centre far outside the image"):** what is
+  lit is too flat (the cello and one board behind it). Add a board at another
+  depth or angle and calibrate again: the app pools the day's captures, which
+  usually solves it.
 - **The light drifts off the cello:** if boards, stands or the backdrop were
   moved or removed but the Kinect and projector were not, press **Room
   changed** (Projector section). The app took the moved surroundings for the
