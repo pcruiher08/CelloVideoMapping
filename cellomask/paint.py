@@ -151,15 +151,24 @@ class BowPainter:
     @staticmethod
     def _flipped(st, cello, angle=35.0, tilt=25.0, gap=0.20):
         """The bow pointing at the cello (see the module doc), or None when
-        the bow or the cello is not there."""
+        the bow or the cello is not there. By geometry alone: one end at the
+        wood, the other sticking out; which of them the tracker calls the
+        frog does not matter (it swaps them now and then)."""
         if not st or not st.get("ok") or cello is None or "angle" not in st or "tilt" not in st:
             return None
         n, C = cello["n"], cello["C"]
-        held = abs((st["frog"] - C) @ n)
-        free = abs((st["tip"] - C) @ n)
-        return abs(st["angle"]) > angle and abs(st["tilt"]) > tilt and held - free > gap
+        d1 = abs((st["frog"] - C) @ n)
+        d2 = abs((st["tip"] - C) @ n)
+        return abs(st["angle"]) > angle and abs(st["tilt"]) > tilt and abs(d1 - d2) > gap
 
-    def _eraser_mode(self, flip, now, on_s=0.2, off_s=0.4):
+    @staticmethod
+    def _at_cello(st, cello):
+        """The bow's end nearer the cello's plane (the eraser's end)."""
+        n, C = cello["n"], cello["C"]
+        a, b = st["frog"], st["tip"]
+        return a if abs((a - C) @ n) < abs((b - C) @ n) else b
+
+    def _eraser_mode(self, flip, now, on_s=0.2, off_s=0.7):
         """Eraser on after `on_s` of the bow flipped, off after `off_s` of it
         not (frames without the bow change nothing)."""
         if flip is None:
@@ -193,7 +202,7 @@ class BowPainter:
         dst = np.float32([[0, 0], [W, 0], [W, H], [0, H]])
         return cv2.getPerspectiveTransform(np.float32(quad), dst)
 
-    def brush_point(self, st, cello, quad, K):
+    def brush_point(self, st, cello, quad, K, end=None):
         """Canvas px of the brush for this bow state, or None. `quad` is the
         image's rectangle on the cello (Plane.quad): its corners in camera px
         (TL, TR, BR, BL) and its size in metres; the canvas is that rectangle."""
@@ -202,7 +211,7 @@ class BowPainter:
         quad, self.fit = quad
         C, axis, n = cello["C"], cello["axis"], cello["n"]
         side = np.cross(axis, n)
-        rel = st["tip"] - C
+        rel = (st["tip"] if end is None else end) - C
         x, y = rel @ side, rel @ axis
         P = C + self.reach * (x * side + y * axis)           # on the cello's plane
         if P[2] <= 0.05:
@@ -305,7 +314,10 @@ class BowPainter:
         # (painting goes on while a gesture may be being held: a steep bow
         # is also a way of drawing; a stroke made while holding to stop fades
         # with the rest)
-        p = self.brush_point(st, cello, quad, K)
+        # erasing: the bow's end at the cello, whichever end the tracker
+        # calls the tip; painting: the tip
+        end = self._at_cello(st, cello) if (self.erasing and st and st.get("ok") and cello is not None) else None
+        p = self.brush_point(st, cello, quad, K, end=end)
         if p is None:
             if self.trail and now - self.trail[-1][1] > 0.3:
                 self.trail = []                    # the bow lost: the next stroke starts fresh

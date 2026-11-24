@@ -2377,6 +2377,28 @@ def build_app(pipe):
             sender.cancel()
             IPHONE.connected -= 1
 
+    @app.post("/api/debug/fullres")
+    def record_fullres(seconds: float = 12.0, fps: float = 10.0):
+        """Record the Kinect's colour at its full resolution (1920 x 1080,
+        not the processing width) for `seconds`, as JPEGs in
+        data/clips/fullres_<time>/ (for testing hand-sign recognition)."""
+        cam = pipe.camera
+        if not hasattr(cam, "_color") or getattr(cam, "info", None) is None:
+            raise HTTPException(409, "needs the Kinect")
+        folder = os.path.join(ROOT, "data", "clips", time.strftime("fullres_%Y%m%d-%H%M%S"))
+        os.makedirs(folder, exist_ok=True)
+        w, h = cam.info["w"], cam.info["h"]
+        n, last, t_end = 0, None, time.time() + min(seconds, 30.0)
+        while time.time() < t_end:
+            raw = cam._color[0]
+            if raw is not None and raw is not last:
+                last = raw
+                img = np.frombuffer(raw, np.uint8).reshape(h, w, 3)
+                cv2.imwrite(os.path.join(folder, f"{n:05d}.jpg"), img, [cv2.IMWRITE_JPEG_QUALITY, 92])
+                n += 1
+            time.sleep(1 / fps)
+        return {"dir": folder, "frames": n, "size": [w, h]}
+
     @app.post("/api/debug/clip")
     def record_clip(seconds: float = 15.0):
         """Record `seconds` of colour + depth + the tracked cello to

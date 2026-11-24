@@ -130,6 +130,22 @@ def main(out):
     after = int((p.alpha > 8).sum())
     if after > 0.7 * before:
         fails.append(f"the eraser wiped little: {before} -> {after} painted px")
+    # the tracker swapping the names (its "frog" at the wood): still erasing,
+    # with the end at the wood, never painting
+    for i in range(45):
+        s = i / 30
+        st = bow(70, 0.35, 0.2 * math.sin(4 * s), 0.1)
+        st["tilt"] = 45.0
+        at_wood = C + 0.2 * math.sin(4 * s) * SIDE + np.array([0, 0, -0.1])
+        st["frog"], st["tip"] = at_wood, at_wood - 0.5 * N + 0.2 * AXIS
+        n_before = int((p.alpha > 8).sum())
+        step(st)
+        if not p.erasing:
+            fails.append(f"frog/tip swapped at {s:.2f} s: not erasing")
+            break
+        if int((p.alpha > 8).sum()) > n_before + 50:
+            fails.append(f"frog/tip swapped at {s:.2f} s: painted instead of erasing")
+            break
     for i in range(30):
         step(bow(5, -0.1, 0.2, 0.0, 0.5))
     if p.erasing:
