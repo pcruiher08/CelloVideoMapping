@@ -347,10 +347,12 @@ class OscOut:
             c.send_message("/bow/present", 1.0 if ok else 0.0)
             if not ok:
                 return
-            for k in ("angle", "tilt", "along"):
+            for k in ("angle", "tilt", "along", "contact"):
                 if k in st:
                     c.send_message(f"/bow/{k}", float(st[k]))
             c.send_message("/bow/speed", float(st["speed"]))
+            if "on_strings" in st:
+                c.send_message("/bow/on_strings", 1.0 if st["on_strings"] else 0.0)
             c.send_message("/bow/length", float(st["length"]))
             c.send_message("/bow/tip", stage(st["tip"]))
             c.send_message("/bow/frog", stage(st["frog"]))

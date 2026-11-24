@@ -1,7 +1,9 @@
 """The bow tracker (cellomask/bow.py) on a synthetic depth scene: a wall at
 3 m, a 1 cm bow 1.8 m away with a fist at the frog, bowed along its own
 length one way, then the other. It must be found, at the right length and
-angle, with the speed's sign and size right (+ = down-bow).
+angle, with the speed's sign and size right (+ = down-bow); lifted off the
+strings, reported as such with no speed; and with no bow, only weak thin
+bits, nothing may be reported.
 
     .venv/bin/python test_bow.py
 """
@@ -43,7 +45,8 @@ def main():
     rng = np.random.default_rng(0)
     bt = BowTracker()
     u = np.array([1.0, 0.0, 0.0])                     # the bow lies across the image, frog on the left
-    cello = {"C": np.array([0.1, 0.05, 2.0]), "axis": np.array([0.0, -1.0, 0.0]), "n": np.array([0.0, 0.0, -1.0])}
+    # the strings ~10 cm behind the bow, as played (the top below them)
+    cello = {"C": np.array([0.1, 0.05, 1.9]), "axis": np.array([0.0, -1.0, 0.0]), "n": np.array([0.0, 0.0, -1.0])}
     fps = 20.0
     found, speeds, angles, lengths = 0, [], [], []
     # a still room first, for the background
@@ -64,12 +67,32 @@ def main():
         angles.append(st["angle"])
         if 8 <= k < 28 or 38 <= k < 58:
             speeds.append((np.sign(v), st["speed"]))
+    # then lifted 35 cm off the strings, still: on_strings must go to 0
+    # within a few frames, and the speed with it
+    lifted = []
+    for k in range(15):
+        frog = np.array([-0.35, 0.05, 1.55])
+        st = bt.update({"depth": scene(frog, frog + 0.7 * u, rng)}, K, (W, H), cello, t=4.0 + k / fps)
+        if st is not None and k >= 3:
+            lifted.append((st.get("on_strings"), st["speed"]))
+    n_lift = sum(1 for on, sp in lifted if on is False and sp == 0.0)
+    print(f"lifted 35 cm: on_strings 0 with speed 0 in {n_lift}/{len(lifted)} frames")
+    # then no bow: only weak, broken thin bits (a rim, the bridge) near the
+    # cello; nothing may be reported as a bow
+    false = 0
+    for k in range(20):
+        d = np.full((DH, DW), 3.0, np.float32)
+        for x in range(200, 275, 6):               # a broken 55 cm sliver, 1 cell wide:
+            d[150, x:x + 4] = 2.0                  # what the rim and bridge looked like
+        d += rng.normal(0, 0.003, d.shape).astype(np.float32)
+        false += bt.update({"depth": d}, K, (W, H), cello, t=5.0 + k / fps) is not None
+    print(f"no bow: reported in {false}/20 frames")
     sp = np.array(speeds)
     down = sp[sp[:, 0] > 0, 1]
     up = sp[sp[:, 0] < 0, 1]
     print(f"found {found}/60 frames, length median {np.median(lengths):.2f} m, angle median {np.median(angles):+.1f} deg")
     print(f"speed: down-bow median {np.median(down):+.2f} m/s, up-bow median {np.median(up):+.2f} m/s (true +-0.50)")
-    ok = (found >= 55 and abs(np.median(lengths) - 0.7) < 0.08 and abs(np.median(angles)) < 3
+    ok = (false == 0 and len(lifted) >= 10 and n_lift == len(lifted) and found >= 55 and abs(np.median(lengths) - 0.7) < 0.08 and abs(np.median(angles)) < 3
           and 0.35 < np.median(down) < 0.65 and -0.65 < np.median(up) < -0.35)
     print("ALL TESTS PASSED" if ok else "SOME TESTS FAILED")
     raise SystemExit(0 if ok else 1)

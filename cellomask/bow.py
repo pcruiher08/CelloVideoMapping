@@ -46,7 +46,11 @@ class BowTracker:
         self.tip_vel = np.zeros(3)  # m/s, low-passed
         self.frog_vel = np.zeros(3)  # the bow hand's velocity (m/s, low-passed)
         self.hand = None
-        self.speeds = []            # recent raw speeds along the bow (m/s)
+        self.speeds = []            # recent raw speeds along the bow (m/s), without the cello
+        self.kf = None              # the stroke filter (_stroke)
+        self.on_strings = True      # the bow on the strings, not lifted (_stroke)
+        self.n_off = self.n_on = 0  # frames in a row clearly lifted / clearly on
+        self.lengths = []           # recent lengths seen (the bow's own: the longest)
         self.state = None           # the last result
         self.points = None          # candidate points of the last frame (debug)
 
@@ -350,6 +354,60 @@ class BowTracker:
             return b, a
         return self._frog_end(a, b, depth, Kd)
 
+    def _stroke(self, frog, u, L, C, axis, t, q=1.0, r=0.05, gate=0.15):
+        """(speed, contact) from how far the frog is from the strings: the
+        bow slides along itself through the point where it crosses them,
+        so that distance grows on a down-bow and shrinks on an up-bow.
+        Measured from both ends (the tip end with the bow's length, known
+        from the longest seen), filtered as position and velocity. Speed
+        in m/s, + down-bow; contact: where on the bow the strings are, 0 at
+        the frog, 1 at the tip. The bow hand's motion, used before, jumped
+        by up to 10 cm a frame (glove, sleeve and stick blend at 3 m): its
+        speed had the right sign 69% of the time and lagged ~0.2 s; this
+        78%, matching a two-way smoothed reference at 0.93 (was 0.72)."""
+        w0 = frog - C
+        b = u @ axis
+        den = 1 - b * b
+        sx = (b * (axis @ w0) - u @ w0) / den if den > 0.05 else 0.0   # frog -> crossing, along the bow (m)
+        # on the strings or lifted: the gap between the bow and the cello's
+        # centre line where they cross. Played, 5-20 cm (the strings stand
+        # above the top; depth noise at 2-3 m); a hand's width up, ~30 cm.
+        # A switch with some hysteresis, 2 frames in a row: single frames of
+        # a lifted bow dipped back towards 10 cm
+        ta = axis @ w0 + b * sx
+        gap = 9.0 if den <= 0.05 else float(np.linalg.norm(frog + sx * u - (C + ta * axis)))
+        self.n_off = self.n_off + 1 if gap > 0.22 else 0
+        self.n_on = self.n_on + 1 if gap < 0.17 else 0
+        if self.on_strings and self.n_off >= 2:
+            self.on_strings = False
+        elif not self.on_strings and self.n_on >= 2:
+            self.on_strings = True
+        if not self.on_strings:
+            # lifted: no stroke (the filter starts afresh on landing)
+            self.kf = None
+            return 0.0, None
+        if den <= 0.05:                      # along the strings: no crossing to measure from
+            return None
+        self.lengths = (self.lengths + [L])[-150:]
+        Lb = float(np.clip(np.percentile(self.lengths, 90), 0.55, 0.85))
+        ends = (sx, Lb - (L - sx))           # from the frog end, from the tip end
+        kf = self.kf
+        if kf is None or t - kf["t"] > 0.3:
+            kf = self.kf = {"x": np.array([np.mean(ends), 0.0]), "P": np.diag([0.01, 1.0]), "t": t}
+        else:
+            dt = max(t - kf["t"], 1e-3)
+            F = np.array([[1.0, dt], [0.0, 1.0]])
+            x = F @ kf["x"]
+            P = F @ kf["P"] @ F.T + q * np.array([[dt ** 3 / 3, dt ** 2 / 2], [dt ** 2 / 2, dt]])
+            # an end far from the forecast (the hand or the cello's edge
+            # cutting the line short) is left out
+            zs = [z for z in ends if abs(z - x[0]) < gate] or list(ends)
+            K = P[:, 0] / (P[0, 0] + r * r)
+            kf["x"] = x + K * (np.mean(zs) - x[0])
+            kf["P"] = P - np.outer(K, P[0])
+            kf["t"] = t
+        return float(kf["x"][1]), float(np.clip(kf["x"][0] / Lb, 0.0, 1.0))
+
     def _hand(self, frog, u, depth, Kd, r=0.09):
         """The bow hand: the centre of the near surface within `r` m of the
         frog end, behind it along the bow (the fist around the frog). It
@@ -519,8 +577,15 @@ class BowTracker:
                     self.min_len <= f[2] <= self.max_len and f[3] > 0.45]
             if fits:
                 a, b, L, cover, n_in = max(fits, key=lambda f: f[2])
-                frog, tip = self._label_ends(a, b, depth, Kd, cello)
-                res = (frog, tip, L, n_in, cover)
+                # strong enough to be the bow: its points (scaled to 2 m, as
+                # they fall off with distance squared), or fewer but evenly
+                # along it. With no bow on stage the cello's rim and bridge
+                # made weak "bows" half the time (20-60 points, cover ~0.5);
+                # the bow has 95+ (scaled) in 95% of frames
+                strong = n_in * (((a[2] + b[2]) / 2) / 2.0) ** 2
+                if strong >= 90 or (strong >= 45 and cover >= 0.6):
+                    frog, tip = self._label_ends(a, b, depth, Kd, cello)
+                    res = (frog, tip, L, n_in, cover)
         self._learn_background(depth, res if self._on_cello(res, cello) else None, Kd)
         if res is None:
             self.prev = None if self.t_prev is None or t - self.t_prev > 0.3 else self.prev
@@ -571,5 +636,11 @@ class BowTracker:
             st["tilt"] = float(np.degrees(np.arcsin(np.clip(u @ nrm, -1, 1))))
             # where along the strings it crosses, from the cello's centre (m, + towards the scroll)
             st["along"] = float((st["centre"] - C) @ axis)
+            stroke = self._stroke(frog, u, L, C, axis, t)
+            st["on_strings"] = self.on_strings
+            if stroke is not None:
+                st["speed"], contact = stroke
+                if contact is not None:
+                    st["contact"] = contact
         self.state = st
         return st

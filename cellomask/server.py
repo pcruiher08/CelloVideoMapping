@@ -815,10 +815,11 @@ class Pipeline(threading.Thread):
         if not st or not st.get("ok"):
             return {"present": False, "found": round(100 * self.bow_share)}
         out = {"present": True, "found": round(100 * self.bow_share),
-               "speed": round(st["speed"], 2), "length": round(st["length"], 2)}
-        for k in ("angle", "tilt", "along"):
+               "speed": round(st["speed"], 2), "length": round(st["length"], 2),
+               "on_strings": st.get("on_strings")}
+        for k in ("angle", "tilt", "along", "contact"):
             if k in st:
-                out[k] = round(st[k], 1 if k != "along" else 3)
+                out[k] = round(st[k], 1 if k in ("angle", "tilt") else 3)
         return out
 
     def run(self):
