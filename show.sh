@@ -25,4 +25,7 @@ echo "Projector window: f cover / uncover the screen, b blackout, q quits (conne
 echo "set it to extend BEFORE starting, or the window opens on this screen)"
 # tracked at 960x540: the 3D calibration and scan are in metres, so they
 # hold at any resolution, and every mask step costs ~half of 1280x720
-exec bash ./run.sh --source "$SOURCE" --projector --host 0.0.0.0 --width 960 --height 540 "$@"
+# caffeinate: no display sleep, idle sleep or screen saver while the show
+# runs (left idle, the Mac locked itself and its lock screen covered the
+# projector)
+exec caffeinate -dimsu bash ./run.sh --source "$SOURCE" --projector --host 0.0.0.0 --width 960 --height 540 "$@"

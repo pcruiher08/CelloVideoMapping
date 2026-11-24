@@ -1,0 +1,82 @@
+"""Hand signs (cellomask/signs.py): the glove's silhouette read as ✌️ / 👍,
+the 1 s hold, and lowering the hand before the same sign toggles again.
+
+    .venv/bin/python test_signs.py
+
+Synthetic white-glove silhouettes on a dark stage, 500 px per metre at the
+cello (the stage's full-resolution Kinect image).
+"""
+
+import sys
+
+import cv2
+import numpy as np
+
+from cellomask.signs import SignWatcher
+
+K = np.array([[1060.0, 0, 960], [0, 1060.0, 540], [0, 0, 1]])
+C = np.array([0.0, 0.1, 2.12])               # 500 px/m at the cello
+
+
+def frame(sign):
+    """A dark frame with a white glove beside the neck making `sign`."""
+    img = np.full((1080, 1920, 3), (60, 40, 20), np.uint8)       # dark blue backdrop
+    cx, cy = 960 + int(0.32 * 500), 593 - int(0.36 * 500)        # inside the zone
+    white = (235, 238, 240)
+    if sign in ("V", "T", "fist"):
+        cv2.ellipse(img, (cx, cy + 30), (32, 30), 0, 0, 360, white, -1)          # the fist / palm
+    if sign == "V":
+        for dx, ang in ((-14, -14), (14, 14)):                                     # two fingers, apart
+            pts = cv2.ellipse2Poly((cx + dx + int(ang * 1.2), cy - 30), (8, 38), ang, 0, 360, 5)
+            cv2.fillPoly(img, [pts], white)
+    if sign == "T":
+        cv2.ellipse(img, (cx - 6, cy - 22), (9, 30), 0, 0, 360, white, -1)          # the thumb, up
+    return img
+
+
+def main():
+    fails = []
+    w = SignWatcher()
+    z = w.zone(C, K, (1080, 1920))
+    for sign, want in (("V", "V"), ("T", "T"), ("fist", "o"), (None, None)):
+        x0, y0, x1, y1, ppm = z
+        got = w.classify(frame(sign)[y0:y1, x0:x1], ppm)
+        if got != want:
+            fails.append(f"{sign}: read as {got!r}, want {want!r}")
+
+    def run(sign, secs, t):
+        ev = []
+        for i in range(int(secs * 30)):
+            e = w.update(frame(sign), K, C, now=t + i / 30)
+            if e:
+                ev.append(e)
+        return ev, t + secs
+
+    t = 0.0
+    ev, t = run("V", 0.6, t)
+    if ev:
+        fails.append(f"toggled after only 0.6 s of peace: {ev}")
+    ev, t = run("V", 0.8, t)
+    if ev != [("pingpong", True)]:
+        fails.append(f"peace held 1.4 s: {ev}, want ping-pong on")
+    ev, t = run("V", 2.0, t)
+    if ev:
+        fails.append(f"peace kept up toggled again without lowering the hand: {ev}")
+    ev, t = run(None, 0.7, t)
+    ev, t = run("T", 1.4, t)
+    if ev != [("overdrive", True)]:
+        fails.append(f"thumbs up held 1.4 s: {ev}, want overdrive on")
+    ev, t = run(None, 0.7, t)
+    ev, t = run("V", 1.4, t)
+    if ev != [("pingpong", False)]:
+        fails.append(f"peace again after lowering: {ev}, want ping-pong off")
+    ev, t = run("fist", 2.0, t)
+    if ev:
+        fails.append(f"a fist toggled something: {ev}")
+
+    print("ALL TESTS PASSED" if not fails else "FAILED:\n  " + "\n  ".join(fails))
+    return not fails
+
+
+if __name__ == "__main__":
+    sys.exit(0 if main() else 1)

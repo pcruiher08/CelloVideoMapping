@@ -27,6 +27,7 @@ from .predict import PlanePredictor, PosePredictor, apply_axis, apply_mask
 from .shape import LearnedShape, ShapeMemory, close_across
 from .bowproc import BowProcess
 from .paint import BowPainter
+from .signs import SignWatcher
 from .model3d import CelloModel, depth_refine
 from .live import LiveMedia, OscOut, ndi_sources, open_live, syphon_sources
 from .composite import composite, debug_overlay, mask_roi, shape_alpha
@@ -75,6 +76,9 @@ DEFAULTS = {
     "osc_port": 9000,
     "bow": True,             # find the bow in the depth (angle, speed, wand) and send it over OSC
     "paint": True,           # paint on the cello with the bow (hold it upright 2 s to start, pointing down 2 s to stop)
+    "signs": True,           # hand signs beside the neck switch Max's effects: peace = ping-pong delay, thumbs up = overdrive
+    "fx_host": "127.0.0.1",  # Max (udpreceive) for the effects switches
+    "fx_port": 7400,
     "paint_behind": True,    # the painting under TouchDesigner's graphics (its dark parts see-through), else on top
     "display_warp": True,
     "motion_inset": 20.0,    # extra edge inset while the cello moves: mm per m/s (up to 12 mm; 0 = off)
@@ -510,6 +514,8 @@ class Pipeline(threading.Thread):
         self.bow_rec = None            # debug: the bow tracker's inputs while /api/debug/bowrec records
         self.painter = BowPainter()    # the bow as a brush on the cello (paint.py)
         self.paint_lock = threading.Lock()
+        self.signs = SignWatcher()     # hand signs -> Max's effects (signs.py)
+        self.fx_client, self.fx_target, self.fx_sent = None, None, 0.0
         self.seen = None               # the cello as segmented this frame (for learning)
         self.covered = 0.0             # fraction of the cello covered (hand, arm, bow)
         self.screens, self.screen_index = [], None   # displays, and the projector window's
@@ -815,6 +821,38 @@ class Pipeline(threading.Thread):
                 print(f"bow: {e!r}")
                 time.sleep(0.1)
 
+    def watch_signs(self, s, now):
+        """Hand signs beside the cello's neck, from the Kinect's colour at
+        full resolution (signs.py); a sign held 1 s toggles its effect in Max."""
+        cam = self.camera
+        raw = getattr(cam, "_color", (None, None))[0]
+        info = getattr(cam, "info", None)
+        cello = self.cello_frame()
+        if raw is None or info is None or cello is None:
+            return
+        img = np.frombuffer(raw, np.uint8).reshape(info["h"], info["w"], 3)
+        K = np.array([[info["fx"], 0, info["cx"]], [0, info["fy"], info["cy"]], [0, 0, 1]], np.float64)
+        ev = self.signs.update(img, K, cello["C"], now)
+        if ev:
+            print(f"hand sign: {ev[0]} {'on' if ev[1] else 'off'}")
+        self.send_fx(s, force=ev is not None, now=now)
+
+    def send_fx(self, s, force=False, now=None):
+        """The effects' states to Max over OSC: on every change, and every 2 s
+        (Max gets back in step after a restart)."""
+        now = time.time() if now is None else now
+        target = (s["fx_host"].strip(), int(s["fx_port"]))
+        if not target[0]:
+            return
+        if target != self.fx_target:
+            from pythonosc.udp_client import SimpleUDPClient
+            self.fx_client, self.fx_target = SimpleUDPClient(*target), target
+            force = True
+        if force or now - self.fx_sent > 2.0:
+            self.fx_sent = now
+            for fx, on in self.signs.fx.items():
+                self.fx_client.send_message(f"/fx/{fx}", 1 if on else 0)
+
     def bow_state(self):
         st = self.bow.state
         if not st or not st.get("ok"):
@@ -981,6 +1019,12 @@ class Pipeline(threading.Thread):
             except Exception as e:               # never let the painting stop the show
                 print(f"paint: {e!r}")
             tick("paint")
+        if s["signs"]:
+            try:
+                self.watch_signs(s, now)
+            except Exception as e:               # never let the signs stop the show
+                print(f"signs: {e!r}")
+            tick("signs")
         if self.osc.client is not None:
             self.osc.send(self, frame.shape, axis,
                           self.tuner.snapshot() if self.tuner is not None and self.tuner.running else None)
@@ -1849,6 +1893,7 @@ class Pipeline(threading.Thread):
                 "scan_fitted": round(100 * self.scan_share),
                 "bow": self.bow_state(),
                 "paint": self.painter.status(),
+                "signs": self.signs.status(),
                 "phone": self.phone_state(),
                 "kinect": self.depthcam_state(),
                 "iphone": {"live": IPHONE.live, "fps": round(IPHONE.fps, 1),
@@ -2412,6 +2457,15 @@ def build_app(pipe):
         with open(os.path.join(folder, "meta.pkl"), "wb") as f:
             pickle.dump({"frames": clip["meta"], "scan": pipe.model.path}, f)
         return {"dir": folder, "frames": clip["n"]}
+
+    @app.post("/api/fx")
+    def fx(body: dict = Body(default={})):
+        """Max's effects by hand: {"pingpong": true/false, "overdrive": ...}."""
+        for k in ("pingpong", "overdrive"):
+            if k in body:
+                pipe.signs.set(k, body[k])
+        pipe.send_fx(pipe.settings, force=True)
+        return pipe.signs.status()
 
     @app.post("/api/paint")
     def paint(body: dict = Body(default={})):
