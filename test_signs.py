@@ -53,6 +53,9 @@ def main():
         return ev, t + secs
 
     t = 0.0
+    ev, t = run(None, 3.0, t)                  # the empty zone, learned as the usual look
+    if ev:
+        fails.append(f"an empty zone toggled something: {ev}")
     ev, t = run("V", 0.6, t)
     if ev:
         fails.append(f"toggled after only 0.6 s of peace: {ev}")
@@ -73,6 +76,29 @@ def main():
     ev, t = run("fist", 2.0, t)
     if ev:
         fails.append(f"a fist toggled something: {ev}")
+
+    # scenery: a white board with printed letters in the zone from the
+    # start (daylight on the stage) reads like a glove, but it was always
+    # there: never a sign
+    b = SignWatcher()
+    board = frame(None)
+    x0, y0, x1, y1, _ = b.zone(C, K, (1080, 1920))
+    cv2.rectangle(board, (x0 - 40, y0 - 40), (x0 + 150, y1 + 60), (240, 240, 240), -1)
+    for k in range(6):
+        cv2.putText(board, "ALTO NO", (x0 - 30, y0 + 30 + 40 * k), cv2.FONT_HERSHEY_SIMPLEX, 1.1, (40, 40, 200), 3)
+    evs = [b.update(board, K, C, now=i / 30) for i in range(30 * 8)]
+    if any(evs):
+        fails.append(f"a white board in the zone toggled: {[e for e in evs if e]}")
+    # and a real sign in front of that board still works
+    hand = board.copy()
+    cx, cy = x0 + 205, y0 + 120                # clear of the board (white on white is invisible)
+    cv2.ellipse(hand, (cx, cy + 30), (32, 30), 0, 0, 360, (235, 238, 240), -1)
+    for dx, ang in ((-14, -14), (14, 14)):
+        cv2.fillPoly(hand, [cv2.ellipse2Poly((cx + dx + int(ang * 1.2), cy - 30), (8, 38), ang, 0, 360, 5)],
+                     (235, 238, 240))
+    evs = [b.update(hand, K, C, now=8 + i / 30) for i in range(45)]
+    if [e for e in evs if e] != [("pingpong", True)]:
+        fails.append(f"peace beside the board: {[e for e in evs if e]}, want ping-pong on")
 
     print("ALL TESTS PASSED" if not fails else "FAILED:\n  " + "\n  ".join(fails))
     return not fails

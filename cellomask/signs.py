@@ -22,6 +22,13 @@ a sign, and never saw a sign while the hand was down.
 
 A sign held for `hold_s` toggles its effect; it has to be lowered before the
 same sign toggles again.
+
+Only white that was not there before counts: the zone's usual look is
+learned slowly (`bg_s`, ~20 s) and the glove must differ from it. In daylight
+the zone also held a white board with printed letters, the bright ceiling and
+a whiteboard's edge, read as a constant ✌️ (it switched the ping-pong on by
+itself); a hand raised for a sign differs from that, the scenery does not.
+Blobs far bigger than a hand are not a glove either.
 """
 
 import time
@@ -43,6 +50,9 @@ class SignWatcher:
         self.sign = None            # this frame's sign
         self.zone_px = None
         self.last_event = None
+        self.bg_s, self.warm_s = 20.0, 2.0      # background time constant; no signs until learned
+        self.bg = None                          # the image's usual look: grey, 1/4 size (float32)
+        self.bg_t0 = self.bg_t = None
 
     # --- the zone and the glove -----------------------------------------------
 
@@ -64,12 +74,16 @@ class SignWatcher:
         return x0, y0, x1, y1, ppm
 
     @staticmethod
-    def classify(region, ppm=500.0):
-        """"V" (✌️), "T" (👍), "o" (a glove, no sign) or None (no glove)."""
+    def classify(region, ppm=500.0, new=None):
+        """"V" (✌️), "T" (👍), "o" (a glove, no sign) or None (no glove).
+        new: where the region differs from its usual look (bool, its size);
+        only there can the glove be."""
         hsv = cv2.cvtColor(region, cv2.COLOR_BGR2HSV)
         v = hsv[..., 2]
         bright = max(120, int(np.percentile(v, 99.5) * 0.8))   # the glove in a darker hall too
         m = ((v > bright) & (hsv[..., 1] < 60)).astype(np.uint8)
+        if new is not None:
+            m &= new.astype(np.uint8)
         m = cv2.morphologyEx(m, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
         n, lab, st, _ = cv2.connectedComponentsWithStats(m)
         if n < 2:
@@ -77,8 +91,8 @@ class SignWatcher:
         i = 1 + int(np.argmax(st[1:, 4]))
         x, y, w, h, a = st[i]
         k = ppm / 500.0                                # sizes tuned at ~500 px/m
-        if a < 600 * k * k or h < 40 * k:
-            return None
+        if a < 600 * k * k or h < 40 * k or a > 15000 * k * k:
+            return None                                # too small, or far bigger than a hand
         blob = lab[y:y + h, x:x + w] == i
         runs, widths = [], []
         min_run = max(2, int(round(3 * k)))
@@ -104,12 +118,15 @@ class SignWatcher:
         intrinsics, C the cello's centre (camera frame, m). Returns
         (effect, on) when a sign toggled an effect, else None."""
         now = time.time() if now is None else now
+        new = self._learn(image, now)
         z = self.zone(C, K, image.shape)
         self.zone_px = None if z is None else z[:4]
         sign = None
-        if z is not None:
+        if z is not None and new is not None:
             x0, y0, x1, y1, ppm = z
-            c = self.classify(image[y0:y1, x0:x1], ppm)
+            q = new[y0 // 4:max(y0 // 4 + 1, y1 // 4), x0 // 4:max(x0 // 4 + 1, x1 // 4)].astype(np.uint8)
+            q = cv2.resize(q, (x1 - x0, y1 - y0), interpolation=cv2.INTER_NEAREST) > 0
+            c = self.classify(image[y0:y1, x0:x1], ppm, new=q)
             sign = c if c in SIGNS else None
         self.sign = sign
         self.seen = [(t, s) for t, s in self.seen if now - t <= self.hold_s] + [(now, sign)]
@@ -131,6 +148,26 @@ class SignWatcher:
         if event:
             self.last_event = (now, *event)
         return event
+
+    def _learn(self, image, now, diff=25.0):
+        """Update the slowly learned usual look of the image; returns where
+        this frame differs from it (bool, 1/4 size), or None while it is
+        still being learned."""
+        h, w = image.shape[:2]
+        small = cv2.cvtColor(cv2.resize(image, (w // 4, h // 4), interpolation=cv2.INTER_AREA),
+                             cv2.COLOR_BGR2GRAY).astype(np.float32)
+        if self.bg is None or self.bg.shape != small.shape:
+            self.bg, self.bg_t0, self.bg_t = small, now, now
+            return None
+        dt = max(0.0, now - self.bg_t)
+        self.bg_t = now
+        warming = now - self.bg_t0 < self.warm_s
+        tc = 0.5 if warming else self.bg_s                 # learn fast at first, then slowly
+        new = np.abs(small - self.bg) > diff
+        self.bg += (1 - np.exp(-dt / tc)) * (small - self.bg)
+        if warming:
+            return None
+        return cv2.dilate(new.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
 
     def hold(self, now=None):
         """0-1: how far the current sign is towards toggling."""
