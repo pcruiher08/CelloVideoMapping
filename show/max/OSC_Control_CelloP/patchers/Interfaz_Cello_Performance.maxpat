@@ -3546,6 +3546,75 @@
 					],
 					"text": "dac~ 2 3 4 5"
 				}
+			},
+			{
+				"box": {
+					"id": "obj-dsp-lb",
+					"maxclass": "newobj",
+					"numinlets": 1,
+					"numoutlets": 1,
+					"outlettype": [
+						"bang"
+					],
+					"patching_rect": [
+						1920.0,
+						120.0,
+						60.0,
+						22.0
+					],
+					"text": "loadbang"
+				}
+			},
+			{
+				"box": {
+					"id": "obj-dsp-del",
+					"maxclass": "newobj",
+					"numinlets": 2,
+					"numoutlets": 1,
+					"outlettype": [
+						"bang"
+					],
+					"patching_rect": [
+						1920.0,
+						155.0,
+						70.0,
+						22.0
+					],
+					"text": "delay 500"
+				}
+			},
+			{
+				"box": {
+					"id": "obj-dsp-msg",
+					"maxclass": "message",
+					"numinlets": 2,
+					"numoutlets": 1,
+					"outlettype": [
+						""
+					],
+					"patching_rect": [
+						1920.0,
+						190.0,
+						80.0,
+						22.0
+					],
+					"text": "; dsp start"
+				}
+			},
+			{
+				"box": {
+					"id": "obj-dsp-c",
+					"maxclass": "comment",
+					"numinlets": 1,
+					"numoutlets": 0,
+					"patching_rect": [
+						2010.0,
+						190.0,
+						230.0,
+						20.0
+					],
+					"text": "audio on when the patch opens"
+				}
 			}
 		],
 		"lines": [
@@ -5514,6 +5583,30 @@
 					"destination": [
 						"obj-fx-dac",
 						3
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-dsp-lb",
+						0
+					],
+					"destination": [
+						"obj-dsp-del",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-dsp-del",
+						0
+					],
+					"destination": [
+						"obj-dsp-msg",
+						0
 					]
 				}
 			}
