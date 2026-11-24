@@ -156,8 +156,8 @@ on `127.0.0.1:7400`, on every change and every 2 s. The web page
 (TouchDesigner section) shows the sign it sees and has buttons for both.
 
 Max (`Interfaz_Cello_Performance.maxpat`, in this repository's `show/max/`)
-turns them into **MIDI CC on the "IAC Driver Bus 1" port, channel 1** (a
-macOS virtual MIDI port; Max's own "from Max" ports are not always there):
+turns them into **MIDI CC on Max's "From Max 1" port, channel 1** (the port
+exists while Max runs):
 
 | Effect | CC | Values |
 |---|---|---|
@@ -165,7 +165,7 @@ macOS virtual MIDI port; Max's own "from Max" ports are not always there):
 | overdrive | 21 | 127 on, 0 off |
 
 In Ableton Live: in **Settings → Link, Tempo & MIDI**, turn on **Remote** for
-the input "IAC Driver (Bus 1)". Then press **MIDI** (top right) to enter MIDI Map
+the input "from Max 1". Then press **MIDI** (top right) to enter MIDI Map
 Mode, click an effect's on/off button, and switch that effect from the web
 page or Max's toggle: Live learns the CC. Press **MIDI** again to leave.
 
