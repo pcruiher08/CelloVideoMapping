@@ -9,7 +9,8 @@ neck, against the dark backdrop and the blue sleeve. So the sign is read from
 the glove's silhouette, in a zone that follows the cello:
 
 - the zone: 0.10-0.60 m to the camera's right of the cello's centre and
-  0.11-0.59 m above it, at the cello's distance (in the camera's view, so a
+  0.02 m below to 0.59 m above it (a hand held low still fits inside), at
+  the cello's distance (in the camera's view, so a
   leaning cello does not tilt it);
 - the glove: bright, unsaturated pixels there, the largest blob;
 - ✌️: two separate prongs (the fingers) across a quarter or more of the
@@ -29,6 +30,13 @@ the zone also held a white board with printed letters, the bright ceiling and
 a whiteboard's edge, read as a constant ✌️ (it switched the ping-pong on by
 itself); a hand raised for a sign differs from that, the scenery does not.
 Blobs far bigger than a hand are not a glove either.
+
+With a white shirt, the sleeve and the bow moving through the zone while
+playing were new white too, and switched the ping-pong by themselves. So the
+glove must be a hand on its own: a blob running into the zone's left, right
+or bottom edge is an arm coming in (a raised hand's fingers may cross the
+top), and a strip along the bow (known from the bow tracker) is left out.
+The signs therefore need white gloves on dark sleeves.
 """
 
 import time
@@ -40,7 +48,7 @@ SIGNS = {"V": "pingpong", "T": "overdrive"}       # the sign -> the effect it sw
 
 
 class SignWatcher:
-    def __init__(self, hold_s=1.0, share=0.7, release_s=0.5, zone=((0.10, 0.60), (0.11, 0.59))):
+    def __init__(self, hold_s=1.0, share=0.7, release_s=0.5, zone=((0.10, 0.60), (-0.02, 0.59))):
         self.hold_s, self.share, self.release_s = hold_s, share, release_s
         self.zone_m = zone
         self.fx = {"pingpong": False, "overdrive": False}   # independent: both can be on
@@ -74,16 +82,18 @@ class SignWatcher:
         return x0, y0, x1, y1, ppm
 
     @staticmethod
-    def classify(region, ppm=500.0, new=None):
+    def classify(region, ppm=500.0, new=None, exclude=None):
         """"V" (✌️), "T" (👍), "o" (a glove, no sign) or None (no glove).
         new: where the region differs from its usual look (bool, its size);
-        only there can the glove be."""
+        only there can the glove be. exclude: where it cannot (the bow)."""
         hsv = cv2.cvtColor(region, cv2.COLOR_BGR2HSV)
         v = hsv[..., 2]
         bright = max(120, int(np.percentile(v, 99.5) * 0.8))   # the glove in a darker hall too
         m = ((v > bright) & (hsv[..., 1] < 60)).astype(np.uint8)
         if new is not None:
             m &= new.astype(np.uint8)
+        if exclude is not None:
+            m[exclude] = 0
         m = cv2.morphologyEx(m, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
         n, lab, st, _ = cv2.connectedComponentsWithStats(m)
         if n < 2:
@@ -93,6 +103,9 @@ class SignWatcher:
         k = ppm / 500.0                                # sizes tuned at ~500 px/m
         if a < 600 * k * k or h < 40 * k or a > 15000 * k * k:
             return None                                # too small, or far bigger than a hand
+        H, W = m.shape
+        if x <= 1 or x + w >= W - 1 or y + h >= H - 1:
+            return None                                # runs into the zone: an arm or a sleeve, not a raised hand
         blob = lab[y:y + h, x:x + w] == i
         runs, widths = [], []
         min_run = max(2, int(round(3 * k)))
@@ -113,9 +126,10 @@ class SignWatcher:
 
     # --- per frame -------------------------------------------------------------
 
-    def update(self, image, K, C, now=None):
+    def update(self, image, K, C, now=None, bow=None):
         """One frame: `image` the full-resolution colour (BGR), K its
-        intrinsics, C the cello's centre (camera frame, m). Returns
+        intrinsics, C the cello's centre (camera frame, m), bow its two
+        ends in image px (or None), left out of the zone. Returns
         (effect, on) when a sign toggled an effect, else None."""
         now = time.time() if now is None else now
         new = self._learn(image, now)
@@ -126,7 +140,14 @@ class SignWatcher:
             x0, y0, x1, y1, ppm = z
             q = new[y0 // 4:max(y0 // 4 + 1, y1 // 4), x0 // 4:max(x0 // 4 + 1, x1 // 4)].astype(np.uint8)
             q = cv2.resize(q, (x1 - x0, y1 - y0), interpolation=cv2.INTER_NEAREST) > 0
-            c = self.classify(image[y0:y1, x0:x1], ppm, new=q)
+            ex = None
+            if bow is not None:
+                ex = np.zeros((y1 - y0, x1 - x0), np.uint8)
+                (ax, ay), (bx, by) = bow
+                cv2.line(ex, (int(ax - x0), int(ay - y0)), (int(bx - x0), int(by - y0)), 1,
+                         max(3, int(0.06 * ppm)))       # a strip ~6 cm wide along the bow
+                ex = ex > 0
+            c = self.classify(image[y0:y1, x0:x1], ppm, new=q, exclude=ex)
             sign = c if c in SIGNS else None
         self.sign = sign
         self.seen = [(t, s) for t, s in self.seen if now - t <= self.hold_s] + [(now, sign)]

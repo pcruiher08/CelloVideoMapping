@@ -100,6 +100,25 @@ def main():
     if [e for e in evs if e] != [("pingpong", True)]:
         fails.append(f"peace beside the board: {[e for e in evs if e]}, want ping-pong on")
 
+    # a white shirt: the sleeve comes into the zone with the hand (one white
+    # blob running into the zone's edge), and the bow sweeps through it while
+    # playing: neither is a sign
+    c = SignWatcher()
+    for i in range(90):
+        c.update(frame(None), K, C, now=i / 30)                    # the empty zone learned
+    zx0, zy0, zx1, zy1, _ = c.zone(C, K, (1080, 1920))
+    evs = []
+    for i in range(30 * 4):
+        img = frame("V")
+        cx, cy = 960 + int(0.32 * 500), 593 - int(0.36 * 500)
+        cv2.line(img, (zx0 - 60, zy1 + 60), (cx, cy + 40), (238, 238, 238), 55)   # the white sleeve
+        swing = int(120 * np.sin(i / 30 * 2 * np.pi / 1.5))
+        a, b = (zx0 - 200, zy1 - 40 + swing), (zx1 + 200, zy0 + 60 - swing)
+        cv2.line(img, a, b, (230, 230, 230), 6)                                  # the bow, moving
+        evs.append(c.update(img, K, C, now=3 + i / 30, bow=(a, b)))
+    if any(evs):
+        fails.append(f"white sleeve + moving bow toggled: {[e for e in evs if e]}")
+
     print("ALL TESTS PASSED" if not fails else "FAILED:\n  " + "\n  ".join(fails))
     return not fails
 

@@ -833,7 +833,11 @@ class Pipeline(threading.Thread):
             return
         img = np.frombuffer(raw, np.uint8).reshape(info["h"], info["w"], 3)
         K = np.array([[info["fx"], 0, info["cx"]], [0, info["fy"], info["cy"]], [0, 0, 1]], np.float64)
-        ev = self.signs.update(img, K, cello["C"], now)
+        bow = None
+        st = self.bow.state
+        if st and st.get("ok") and st["frog"][2] > 0.1 and st["tip"][2] > 0.1:
+            bow = [(P[0] / P[2] * K[0, 0] + K[0, 2], P[1] / P[2] * K[1, 1] + K[1, 2]) for P in (st["frog"], st["tip"])]
+        ev = self.signs.update(img, K, cello["C"], now, bow=bow)
         if ev:
             print(f"hand sign: {ev[0]} {'on' if ev[1] else 'off'}")
         self.send_fx(s, force=ev is not None, now=now)
