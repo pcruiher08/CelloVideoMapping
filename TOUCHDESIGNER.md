@@ -140,7 +140,7 @@ drifts slowly.
   buttons for rehearsal, the gesture's progress, and a switch to turn the
   painting off.
 
-## Hand signs switch effects in Max
+## Hand signs switch effects in Ableton
 
 With the fingering hand beside the cello's neck, **in the white gloves**:
 
@@ -148,19 +148,25 @@ With the fingering hand beside the cello's neck, **in the white gloves**:
 - **👍 thumbs up**, held about 1 s, switches the **overdrive** on or off.
 - Lower the hand before the same sign switches it back.
 
-The app reads the glove's outline in the Kinect's full-resolution image, so
-bare hands are not seen. It sends `/fx/pingpong` and `/fx/overdrive` (1 on,
-0 off) to Max on `127.0.0.1:7400`, on every change and every 2 s. The web page
-(TouchDesigner section) shows the sign it sees and has buttons to switch the
-effects by hand.
+The app reads the glove's outline in the Kinect's full-resolution image (bare
+hands are not seen; white things that were already in the zone are ignored).
+It sends `/fx/pingpong`, `/fx/overdrive` and `/fx/mono` (1 on, 0 off) to Max
+on `127.0.0.1:7400`, on every change and every 2 s. The web page
+(TouchDesigner section) shows the sign it sees and has buttons for all three.
 
-In Max, `Interfaz_Cello_Performance.maxpat` (in this repository's `show/max/`)
-has the effects: the cello from input 1 through an overdrive and a ping-pong
-delay, out on the Mac's outputs 2–5, which the console sends to its physical
-outputs 1–4: the quadraphonic L1, R1, L2, R2. The echoes alternate between
-the left speakers (L1, L2) and the right ones (R1, R2). A **mono** switch puts
-the dry cello on all four. All three are switched by `udpreceive 7400`
-(`/fx/overdrive`, `/fx/pingpong`, `/fx/mono`) or by the patch's toggles.
+Max (`Interfaz_Cello_Performance.maxpat`, in this repository's `show/max/`)
+turns them into **MIDI CC on the "From Max 1" port, channel 1**:
+
+| Effect | CC | Values |
+|---|---|---|
+| ping-pong delay | 20 | 127 on, 0 off |
+| overdrive | 21 | 127 on, 0 off |
+| mono | 22 | 127 on, 0 off |
+
+In Ableton Live: in **Settings → Link, Tempo & MIDI**, turn on **Remote** for
+the input "from Max 1". Then press **MIDI** (top right) to enter MIDI Map
+Mode, click an effect's on/off button, and switch that effect from the web
+page or Max's toggle: Live learns the CC. Press **MIDI** again to leave.
 
 ## What the app does on its own
 
