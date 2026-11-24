@@ -3095,10 +3095,10 @@
 					"patching_rect": [
 						1560.0,
 						82.0,
-						700.0,
+						820.0,
 						20.0
 					],
-					"text": "peace = ping-pong delay, thumbs up = overdrive; or click the toggles. Out: dac~ 3 4 5 6 = LF RF LB RB (echoes L on 3+5, R on 4+6)"
+					"text": "peace = ping-pong, thumbs up = overdrive, mono = dry cello on all four; or click the toggles. Out: dac~ 2 3 4 5 = L1 R1 L2 R2 (console outs 1-4; echoes L on 2+4, R on 3+5)"
 				}
 			},
 			{
@@ -3124,15 +3124,16 @@
 					"id": "obj-fx-route",
 					"maxclass": "newobj",
 					"numinlets": 2,
-					"numoutlets": 3,
+					"numoutlets": 4,
 					"patching_rect": [
 						1560.0,
 						155.0,
-						210.0,
+						270.0,
 						22.0
 					],
-					"text": "route /fx/overdrive /fx/pingpong",
+					"text": "route /fx/overdrive /fx/pingpong /fx/mono",
 					"outlettype": [
+						"",
 						"",
 						"",
 						""
@@ -3544,7 +3545,7 @@
 						110.0,
 						22.0
 					],
-					"text": "dac~ 3 4 5 6"
+					"text": "dac~ 2 3 4 5"
 				}
 			},
 			{
@@ -3614,6 +3615,94 @@
 						20.0
 					],
 					"text": "audio on when the patch opens"
+				}
+			},
+			{
+				"box": {
+					"id": "obj-fx-monol",
+					"maxclass": "comment",
+					"numinlets": 1,
+					"numoutlets": 0,
+					"patching_rect": [
+						1850.0,
+						190.0,
+						120.0,
+						20.0
+					],
+					"text": "mono (dry, all 4)"
+				}
+			},
+			{
+				"box": {
+					"id": "obj-fx-monot",
+					"maxclass": "toggle",
+					"numinlets": 1,
+					"numoutlets": 1,
+					"outlettype": [
+						"int"
+					],
+					"parameter_enable": 0,
+					"patching_rect": [
+						1850.0,
+						212.0,
+						24.0,
+						24.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-fx-monopk",
+					"maxclass": "newobj",
+					"numinlets": 2,
+					"numoutlets": 1,
+					"outlettype": [
+						""
+					],
+					"patching_rect": [
+						1850.0,
+						250.0,
+						70.0,
+						22.0
+					],
+					"text": "pack f 30"
+				}
+			},
+			{
+				"box": {
+					"id": "obj-fx-monoenv",
+					"maxclass": "newobj",
+					"numinlets": 2,
+					"numoutlets": 2,
+					"outlettype": [
+						"signal",
+						"bang"
+					],
+					"patching_rect": [
+						1850.0,
+						285.0,
+						45.0,
+						22.0
+					],
+					"text": "line~"
+				}
+			},
+			{
+				"box": {
+					"id": "obj-fx-monodry",
+					"maxclass": "newobj",
+					"numinlets": 2,
+					"numoutlets": 1,
+					"outlettype": [
+						"signal"
+					],
+					"patching_rect": [
+						1850.0,
+						320.0,
+						40.0,
+						22.0
+					],
+					"text": "*~"
 				}
 			}
 		],
@@ -5606,6 +5695,90 @@
 					],
 					"destination": [
 						"obj-dsp-msg",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-fx-route",
+						2
+					],
+					"destination": [
+						"obj-fx-monot",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-fx-monot",
+						0
+					],
+					"destination": [
+						"obj-fx-monopk",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-fx-monopk",
+						0
+					],
+					"destination": [
+						"obj-fx-monoenv",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-84",
+						0
+					],
+					"destination": [
+						"obj-fx-monodry",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-fx-monoenv",
+						0
+					],
+					"destination": [
+						"obj-fx-monodry",
+						1
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-fx-monodry",
+						0
+					],
+					"destination": [
+						"obj-fx-lout",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-fx-monodry",
+						0
+					],
+					"destination": [
+						"obj-fx-rout",
 						0
 					]
 				}

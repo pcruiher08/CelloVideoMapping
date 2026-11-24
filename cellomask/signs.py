@@ -36,7 +36,7 @@ class SignWatcher:
     def __init__(self, hold_s=1.0, share=0.7, release_s=0.5, zone=((0.10, 0.60), (0.11, 0.59))):
         self.hold_s, self.share, self.release_s = hold_s, share, release_s
         self.zone_m = zone
-        self.fx = {"pingpong": False, "overdrive": False}
+        self.fx = {"pingpong": False, "overdrive": False, "mono": False}   # mono: by hand only (no sign)
         self.seen = []              # (time, sign or None) over the last hold_s
         self.armed = {"V": True, "T": True}
         self.gone_since = {"V": None, "T": None}
@@ -148,5 +148,5 @@ class SignWatcher:
     def status(self, now=None):
         names = {"V": "peace", "T": "thumbs up"}
         return {"sign": names.get(self.sign), "hold": round(self.hold(now), 2),
-                "pingpong": self.fx["pingpong"], "overdrive": self.fx["overdrive"],
+                "pingpong": self.fx["pingpong"], "overdrive": self.fx["overdrive"], "mono": self.fx["mono"],
                 "zone": None if self.zone_px is None else [int(v) for v in self.zone_px]}

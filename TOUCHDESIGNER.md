@@ -156,9 +156,11 @@ effects by hand.
 
 In Max, `Interfaz_Cello_Performance.maxpat` (in this repository's `show/max/`)
 has the effects: the cello from input 1 through an overdrive and a ping-pong
-delay, out on outputs 3–6 (the console's USB 3–6: LF, RF, LB, RB), switched by
-`udpreceive 7400` or by its two toggles. The echoes alternate between the left
-speakers (3, 5) and the right ones (4, 6).
+delay, out on the Mac's outputs 2–5, which the console sends to its physical
+outputs 1–4: the quadraphonic L1, R1, L2, R2. The echoes alternate between
+the left speakers (L1, L2) and the right ones (R1, R2). A **mono** switch puts
+the dry cello on all four. All three are switched by `udpreceive 7400`
+(`/fx/overdrive`, `/fx/pingpong`, `/fx/mono`) or by the patch's toggles.
 
 ## What the app does on its own
 
