@@ -2478,9 +2478,9 @@ def build_app(pipe):
 
     @app.post("/api/fx")
     def fx(body: dict = Body(default={})):
-        """The effects by hand: {"pingpong": true/false, "overdrive": true/false}
-        (each on its own: both can be on)."""
-        for k in ("pingpong", "overdrive"):
+        """The effects by hand: {"pingpong": true/false, "overdrive": true/false,
+        "delay": true/false} (each on its own: all can be on)."""
+        for k in pipe.signs.fx:
             if k in body:
                 pipe.signs.set(k, body[k])
         pipe.send_fx(pipe.settings, force=True)

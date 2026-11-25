@@ -146,6 +146,9 @@ With the fingering hand (bare, no gloves needed) beside the cello's neck:
 
 - **✌️ peace**, held about 1–2 s, switches the **ping-pong delay** on or off.
 - **👍 thumbs up**, held about 1–2 s, switches the **overdrive** on or off.
+- **🖐️ open hand**, raised with the fingers up and spread, held about 1–2 s,
+  switches the **delay** on or off. (A hand hanging relaxed beside the cello
+  does not count.)
 - Lower the hand for about 2 s before the same sign switches it back.
 
 The signs are read by a service of their own, `tools/signs_service.py`,
@@ -154,9 +157,9 @@ which `show.sh` starts with the app (its log: `data/signs.log`;
 `tools/signs_setup.sh`: its own Python environment and two models, a few
 minutes with internet. It finds the cellist's hand with MediaPipe's body
 pose, reads the fingers with RTMPose-hand, and switches the effects as the
-web page's buttons do. The app sends `/fx/pingpong` and `/fx/overdrive` (1
-on, 0 off; each on its own, so both can be on) to Max on `127.0.0.1:7400`.
-The web page (TouchDesigner section) has buttons for both.
+web page's buttons do. The app sends `/fx/pingpong`, `/fx/overdrive` and `/fx/delay`
+(1 on, 0 off; each on its own, so all can be on) to Max on `127.0.0.1:7400`.
+The web page (TouchDesigner section) has a button for each.
 
 Max (`Interfaz_Cello_Performance.maxpat`, in this repository's `show/max/`)
 turns them into **MIDI CC on Max's "From Max 1" port, channel 1** (the port
@@ -166,6 +169,7 @@ exists while Max runs):
 |---|---|---|
 | ping-pong delay | 20 | 127 on, 0 off |
 | overdrive | 21 | 127 on, 0 off |
+| delay | 22 | 127 on, 0 off |
 
 In Ableton Live: in **Settings → Link, Tempo & MIDI**, turn on **Remote** for
 the input "from Max 1". Then press **MIDI** (top right) to enter MIDI Map
@@ -175,7 +179,7 @@ page or Max's toggle: Live learns the CC. Press **MIDI** again to leave.
 - **Open Max before Live.** Max makes the "from Max" ports when it starts;
   Live only sees ports that exist when it opens.
 - In the mapping list, each effect's **Min is Off and Max is On**, not
-  toggle: the sign service sends both states again every 2 s, which keeps
+  toggle: the sign service sends all three states again every 2 s, which keeps
   Live in step.
 - To check what reaches Live: `python3 tools/midimon.py 10` lists every MIDI
   message for 10 s.

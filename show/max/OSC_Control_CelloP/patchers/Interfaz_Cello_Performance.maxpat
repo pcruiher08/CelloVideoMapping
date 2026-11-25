@@ -1857,7 +1857,7 @@
                     "numinlets": 1,
                     "numoutlets": 0,
                     "patching_rect": [ 1560.0, 60.0, 720.0, 20.0 ],
-                    "text": "EFFECTS BY HAND SIGNS -> ABLETON  (cello app -> udpreceive 7400: /fx/pingpong, /fx/overdrive  1|0)"
+                    "text": "EFFECTS BY HAND SIGNS -> ABLETON  (cello app -> udpreceive 7400: /fx/pingpong, /fx/overdrive, /fx/delay  1|0)"
                 }
             },
             {
@@ -1867,7 +1867,7 @@
                     "numinlets": 1,
                     "numoutlets": 0,
                     "patching_rect": [ 1560.0, 82.0, 994.0, 20.0 ],
-                    "text": "-> MIDI CC to Live on 'From Max 1', channel 1: ping-pong CC 20, overdrive CC 21 (127 on, 0 off; both can be on). In Live: Remote on for 'from Max 1', then MIDI Map each effect's on/off."
+                    "text": "-> MIDI CC to Live on 'From Max 1', channel 1: ping-pong CC 20, overdrive CC 21, delay CC 22 (127 on, 0 off; all can be on). In Live: Remote on for 'from Max 1', then MIDI Map each effect's on/off."
                 }
             },
             {
@@ -1886,10 +1886,10 @@
                     "id": "obj-fx-route",
                     "maxclass": "newobj",
                     "numinlets": 3,
-                    "numoutlets": 3,
-                    "outlettype": [ "", "", "" ],
+                    "numoutlets": 4,
+                    "outlettype": [ "", "", "", "" ],
                     "patching_rect": [ 1560.0, 155.0, 270.0, 22.0 ],
-                    "text": "route /fx/overdrive /fx/pingpong"
+                    "text": "route /fx/overdrive /fx/pingpong /fx/delay"
                 }
             },
             {
@@ -2018,6 +2018,48 @@
                     "numoutlets": 0,
                     "patching_rect": [ 1720.0, 285.0, 140.0, 22.0 ],
                     "text": "ctlout \"From Max 1\" 20 1"
+                }
+            },
+            {
+                "box": {
+                    "id": "obj-fx-dll",
+                    "maxclass": "comment",
+                    "numinlets": 1,
+                    "numoutlets": 0,
+                    "patching_rect": [ 1880.0, 190.0, 80.0, 20.0 ],
+                    "text": "delay"
+                }
+            },
+            {
+                "box": {
+                    "id": "obj-fx-dlt",
+                    "maxclass": "toggle",
+                    "numinlets": 1,
+                    "numoutlets": 1,
+                    "outlettype": [ "int" ],
+                    "parameter_enable": 0,
+                    "patching_rect": [ 1880.0, 212.0, 24.0, 24.0 ]
+                }
+            },
+            {
+                "box": {
+                    "id": "obj-fx-dlcc127",
+                    "maxclass": "newobj",
+                    "numinlets": 2,
+                    "numoutlets": 1,
+                    "outlettype": [ "int" ],
+                    "patching_rect": [ 1880.0, 250.0, 45.0, 22.0 ],
+                    "text": "* 127"
+                }
+            },
+            {
+                "box": {
+                    "id": "obj-fx-dlccout",
+                    "maxclass": "newobj",
+                    "numinlets": 3,
+                    "numoutlets": 0,
+                    "patching_rect": [ 1880.0, 285.0, 140.0, 22.0 ],
+                    "text": "ctlout \"From Max 1\" 22 1"
                 }
             }
         ],
@@ -2792,6 +2834,24 @@
                 "patchline": {
                     "destination": [ "obj-fx-route", 0 ],
                     "source": [ "obj-fx-udp", 0 ]
+                }
+            },
+            {
+                "patchline": {
+                    "destination": [ "obj-fx-dlt", 0 ],
+                    "source": [ "obj-fx-route", 2 ]
+                }
+            },
+            {
+                "patchline": {
+                    "destination": [ "obj-fx-dlcc127", 0 ],
+                    "source": [ "obj-fx-dlt", 0 ]
+                }
+            },
+            {
+                "patchline": {
+                    "destination": [ "obj-fx-dlccout", 0 ],
+                    "source": [ "obj-fx-dlcc127", 0 ]
                 }
             }
         ],

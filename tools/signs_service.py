@@ -12,6 +12,7 @@
   which MediaPipe's palm detector misses);
 - the sign: index + middle straight and apart, ring + pinky folded = ✌️;
   thumb up above the knuckles, the four fingers folded = 👍;
+  all five fingers straight and spread = 🖐️ (switches the delay, CC 22);
 - a sign seen on `need` frames within `window_s`, more than the other sign,
   toggles its effect through the app's /api/fx (as the page's buttons do;
   the app passes it on to Max). The hand must leave the sign for
@@ -37,8 +38,8 @@ from rtmlib import RTMPose
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # the app's folder
 MODELS = os.path.join(ROOT, "signs", "models")                       # fetched by tools/signs_setup.sh
-SIGNS = {"V": "pingpong", "T": "overdrive"}
-NAMES = {"V": "peace", "T": "thumbs up"}
+SIGNS = {"V": "pingpong", "T": "overdrive", "O": "delay"}
+NAMES = {"V": "peace", "T": "thumbs up", "O": "open hand"}
 FX_LOCK = threading.Lock()                # a resend never lands between a sign's read and its switch
 
 
@@ -88,7 +89,7 @@ class Resender(threading.Thread):
             try:
                 with FX_LOCK:
                     st = get(self.app, "/api/state")["projector"]["signs"]
-                    post(self.app, "/api/fx", {fx: bool(st[fx]) for fx in SIGNS.values()}, timeout=5)
+                    post(self.app, "/api/fx", {fx: bool(st[fx]) for fx in SIGNS.values() if fx in st}, timeout=5)
             except Exception:
                 pass                      # the app is restarting or busy: next time
 
@@ -117,6 +118,16 @@ def classify(k, s, cut=0.15):
     I, M, R, P = straight(5, 6, 8), straight(9, 10, 12), straight(13, 14, 16), straight(17, 18, 20)
     if I and M and not R and not P and np.linalg.norm(k[8] - k[12]) > 0.35 * size:
         return "V"
+    # open hand: raised (the fingers point up: a hand hanging relaxed beside
+    # the cello, between signs, also has them straight), the four fingers
+    # straight and fanned out, the thumb out to the side
+    up_hand = k[12][1] < w[1] - 0.8 * size and k[9][1] < w[1]
+    if I and M and R and P and up_hand:
+        thumb_out = (np.linalg.norm(k[4] - k[5]) > 0.6 * size
+                     and np.linalg.norm(k[4] - w) > 1.2 * np.linalg.norm(k[2] - w))
+        spread = np.linalg.norm(k[8] - k[20]) > 0.9 * size
+        if thumb_out and spread:
+            return "O"
     up = k[4][1] < min(k[5][1], k[9][1], k[13][1], k[17][1]) - 0.3 * size
     if up and not I and not M and not R and not P:
         return "T"
@@ -154,9 +165,9 @@ def main():
     resend = Resender(a.app)
     resend.start()
     seen = deque()                        # (time, sign)
-    armed = {"V": True, "T": True}
-    last_seen = {"V": 0.0, "T": 0.0}
-    armed_at = {"V": 0.0, "T": 0.0}
+    armed = {s: True for s in SIGNS}
+    last_seen = {s: 0.0 for s in SIGNS}
+    armed_at = {s: 0.0 for s in SIGNS}
     box, box_t = None, 0.0                # the last hand box, kept 1 s when the pose drops out
     done, line_t, n = None, 0.0, 0
     last_frame_t = t_start
@@ -203,12 +214,12 @@ def main():
             # only frames since the sign was re-armed count (older ones belong
             # to the sign that already switched)
             counts = {s: sum(1 for t, x in seen if x == s and t >= armed_at[s]) for s in SIGNS}
-            for s, other in (("V", "T"), ("T", "V")):
-                if armed[s] and counts[s] >= a.need and counts[s] > counts[other]:
+            for s in SIGNS:
+                if armed[s] and counts[s] >= a.need and counts[s] > max(counts[o] for o in SIGNS if o != s):
                     fx = SIGNS[s]
                     try:
                         with FX_LOCK:
-                            cur = get(a.app, "/api/state")["projector"]["signs"][fx]
+                            cur = get(a.app, "/api/state")["projector"]["signs"].get(fx, False)
                             st = post(a.app, "/api/fx", {fx: not cur}, timeout=5)
                         print(f"{time.strftime('%H:%M:%S')}  {NAMES[s]} -> {fx} {'ON' if st[fx] else 'off'}", flush=True)
                     except Exception as e:
@@ -219,7 +230,7 @@ def main():
             if now - line_t > 1.0:
                 line_t = now
                 print(f"{time.strftime('%H:%M:%S')}  sees {NAMES.get(sign, sign or '-'):9s}  "
-                      f"peace {counts['V']}  thumbs {counts['T']}  ({n} frames)", flush=True)
+                      f"peace {counts['V']}  thumbs {counts['T']}  open {counts['O']}  ({n} frames)", flush=True)
             # the recorder's JPEGs are only needed until read
             for d in dirs:
                 for g in sorted(glob.glob(os.path.join(d, "*.jpg")))[:-3]:
