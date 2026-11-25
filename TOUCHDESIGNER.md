@@ -165,8 +165,8 @@ can be on) to Max on `127.0.0.1:7400`.
 The web page (TouchDesigner section) has a button for each.
 
 **On a phone:** `http://<the show Mac's address>:8000/toggles` shows the four
-toggles as big on/off tiles, updated twice a second (view only: a tap never
-switches anything). The phone must be on the same network; `show.sh` prints
+toggles as big on/off tiles, updated twice a second; a tap on a tile switches
+that toggle, as its sign would. The phone must be on the same network; `show.sh` prints
 the address. In Safari, Share → Add to Home Screen opens it full screen.
 
 Max (`Interfaz_Cello_Performance.maxpat`, in this repository's `show/max/`)
