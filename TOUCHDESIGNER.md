@@ -181,7 +181,8 @@ exists while Max runs):
 | coordinates change (for TouchDesigner) | 23 | 127 on, 0 off |
 
 **Coordinates change** is for TouchDesigner, not Live: read CC 23 with a
-**MIDI In CHOP** on the device "from Max 1" (channel 1). Live ignores it as
+**MIDI In CHOP** on the device "from Max 1" (channel 1). It arrives once per switch
+(127 on, 0 off). Live ignores it as
 long as nothing in Live is mapped to CC 23.
 
 In Ableton Live: in **Settings → Link, Tempo & MIDI**, turn on **Remote** for
@@ -192,8 +193,9 @@ page or Max's toggle: Live learns the CC. Press **MIDI** again to leave.
 - **Open Max before Live.** Max makes the "from Max" ports when it starts;
   Live only sees ports that exist when it opens.
 - In the mapping list, each effect's **Min is Off and Max is On**, not
-  toggle: the sign service sends all four states again every 2 s, which keeps
-  Live in step.
+  toggle: the sign service sends the states again every 2 s, which keeps
+  Live in step. Max passes CC 23 (for TouchDesigner) on only when it changes,
+  so TouchDesigner gets one message per switch, not a repeat every 2 s.
 - To check what reaches Live: `python3 tools/midimon.py 10` lists every MIDI
   message for 10 s.
 

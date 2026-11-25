@@ -1867,7 +1867,7 @@
                     "numinlets": 1,
                     "numoutlets": 0,
                     "patching_rect": [ 1560.0, 82.0, 1200.0, 20.0 ],
-                    "text": "-> MIDI CC on 'From Max 1', channel 1: ping-pong CC 20, overdrive CC 21, delay CC 22 (Live), coordinates change CC 23 (TouchDesigner) (127 on, 0 off; all can be on). In Live: Remote on for 'from Max 1', then MIDI Map each effect's on/off."
+                    "text": "-> MIDI CC on 'From Max 1', channel 1: ping-pong CC 20, overdrive CC 21, delay CC 22 (Live), coordinates change CC 23 (TouchDesigner; sent only when it changes) (127 on, 0 off; all can be on). In Live: Remote on for 'from Max 1', then MIDI Map each effect's on/off."
                 }
             },
             {
@@ -2090,7 +2090,7 @@
                     "numinlets": 2,
                     "numoutlets": 1,
                     "outlettype": [ "int" ],
-                    "patching_rect": [ 2040.0, 250.0, 45.0, 22.0 ],
+                    "patching_rect": [ 2040.0, 275.0, 45.0, 22.0 ],
                     "text": "* 127"
                 }
             },
@@ -2100,8 +2100,19 @@
                     "maxclass": "newobj",
                     "numinlets": 3,
                     "numoutlets": 0,
-                    "patching_rect": [ 2040.0, 285.0, 140.0, 22.0 ],
+                    "patching_rect": [ 2040.0, 310.0, 140.0, 22.0 ],
                     "text": "ctlout \"From Max 1\" 23 1"
+                }
+            },
+            {
+                "box": {
+                    "id": "obj-fx-ccchange",
+                    "maxclass": "newobj",
+                    "numinlets": 1,
+                    "numoutlets": 3,
+                    "outlettype": [ "", "int", "int" ],
+                    "patching_rect": [ 2040.0, 245.0, 50.0, 22.0 ],
+                    "text": "change"
                 }
             }
         ],
@@ -2904,14 +2915,20 @@
             },
             {
                 "patchline": {
-                    "destination": [ "obj-fx-cccc127", 0 ],
-                    "source": [ "obj-fx-cct", 0 ]
+                    "destination": [ "obj-fx-ccccout", 0 ],
+                    "source": [ "obj-fx-cccc127", 0 ]
                 }
             },
             {
                 "patchline": {
-                    "destination": [ "obj-fx-ccccout", 0 ],
-                    "source": [ "obj-fx-cccc127", 0 ]
+                    "source": [ "obj-fx-cct", 0 ],
+                    "destination": [ "obj-fx-ccchange", 0 ]
+                }
+            },
+            {
+                "patchline": {
+                    "source": [ "obj-fx-ccchange", 0 ],
+                    "destination": [ "obj-fx-cccc127", 0 ]
                 }
             }
         ],
