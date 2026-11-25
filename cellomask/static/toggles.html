@@ -8,7 +8,7 @@
 <meta name="apple-mobile-web-app-title" content="Toggles">
 <title>Cello toggles</title>
 <style>
-  /* the four hand-sign toggles, view only (a tap never switches anything) */
+  /* the four hand-sign toggles; a tap on a tile switches it (as the sign would) */
   :root { --bg: #000; --tile: #1a1a1a; --text: #f2f2f2; --dim: #8a8a8a; --on: #19c26b; }
   * { box-sizing: border-box; margin: 0; }
   html, body { height: 100%; background: var(--bg); color: var(--text);
@@ -16,7 +16,10 @@
   body { display: flex; flex-direction: column; padding: max(12px, env(safe-area-inset-top)) 12px max(12px, env(safe-area-inset-bottom)); gap: 10px; }
   .grid { flex: 1; display: grid; grid-template-rows: repeat(4, 1fr); gap: 10px; }
   .t { background: var(--tile); border-radius: 18px; display: flex; align-items: center; gap: 14px;
-    padding: 0 18px; transition: background .15s; }
+    padding: 0 18px; transition: background .15s, transform .08s; cursor: pointer;
+    touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+  .t:active { transform: scale(.98); }
+  .t.busy { opacity: .6; }
   .t .sign { font-size: 44px; width: 56px; text-align: center; }
   .t .name { flex: 1; }
   .t .name b { display: block; font-size: 22px; }
@@ -42,17 +45,35 @@
 <div class="bar" id="bar"><span><span class="dot"></span><span id="conn">connecting…</span></span><span id="seen"></span></div>
 <script>
 const ids = ['pingpong', 'overdrive', 'delay', 'coordinateschange'];
-let last = 0;
+let last = 0, state = {};
+function show(s) {
+  state = s;
+  for (const k of ids) {
+    const el = document.getElementById(k), on = !!s[k];
+    el.classList.toggle('on', on);
+    el.querySelector('.st').textContent = on ? 'ON' : 'OFF';
+  }
+  last = Date.now();
+}
+// a tap switches that toggle (one request at a time per tile, so a double tap
+// does not switch it twice)
+for (const k of ids) {
+  const el = document.getElementById(k);
+  el.addEventListener('click', async () => {
+    if (el.classList.contains('busy')) return;
+    el.classList.add('busy');
+    try {
+      const r = await fetch('/api/fx', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                         body: JSON.stringify({ [k]: !state[k] }) });
+      show(await r.json());
+    } catch (e) {}
+    setTimeout(() => el.classList.remove('busy'), 400);
+  });
+}
 async function tick() {
   try {
     const r = await fetch('/api/fx', { cache: 'no-store' });
-    const s = await r.json();
-    for (const k of ids) {
-      const el = document.getElementById(k), on = !!s[k];
-      el.classList.toggle('on', on);
-      el.querySelector('.st').textContent = on ? 'ON' : 'OFF';
-    }
-    last = Date.now();
+    show(await r.json());
   } catch (e) {}
   const ok = Date.now() - last < 3000, bar = document.getElementById('bar');
   bar.className = 'bar ' + (ok ? 'ok' : 'lost');

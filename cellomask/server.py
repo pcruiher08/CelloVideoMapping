@@ -2286,7 +2286,7 @@ def build_app(pipe):
 
     @app.get("/toggles")
     def toggles_page():
-        """The four sign toggles at a glance, for a phone (view only)."""
+        """The four sign toggles at a glance, for a phone (a tap switches one)."""
         return FileResponse(os.path.join(STATIC, "toggles.html"), headers={"Cache-Control": "no-store"})
 
     @app.get("/api/fx")
