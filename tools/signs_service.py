@@ -13,6 +13,8 @@
 - the sign: index + middle straight and apart, ring + pinky folded = ✌️;
   thumb up above the knuckles, the four fingers folded = 👍;
   all five fingers straight and spread = 🖐️ (switches the delay, CC 22);
+  index + pinky straight, middle + ring folded = 🤘 (coordinateschange, CC 23,
+  for TouchDesigner);
 - a sign seen on `need` frames within `window_s`, more than the other sign,
   toggles its effect through the app's /api/fx (as the page's buttons do;
   the app passes it on to Max). The hand must leave the sign for
@@ -38,8 +40,8 @@ from rtmlib import RTMPose
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # the app's folder
 MODELS = os.path.join(ROOT, "signs", "models")                       # fetched by tools/signs_setup.sh
-SIGNS = {"V": "pingpong", "T": "overdrive", "O": "delay"}
-NAMES = {"V": "peace", "T": "thumbs up", "O": "open hand"}
+SIGNS = {"V": "pingpong", "T": "overdrive", "O": "delay", "H": "coordinateschange"}
+NAMES = {"V": "peace", "T": "thumbs up", "O": "open hand", "H": "horns"}
 FX_LOCK = threading.Lock()                # a resend never lands between a sign's read and its switch
 
 
@@ -115,14 +117,23 @@ def classify(k, s, cut=0.15):
         return (np.linalg.norm(k[tip] - w) > 1.25 * np.linalg.norm(k[pip] - w)
                 and np.linalg.norm(k[tip] - k[mcp]) > 0.55 * size)
 
+    def upright(mcp, tip):
+        """the finger points up (within about 50 deg of vertical): a sign is
+        made with the fingers up; on the fingerboard they lie across the neck"""
+        d = k[tip] - k[mcp]
+        return -d[1] > 0.65 * (np.linalg.norm(d) + 1e-6)
+
     I, M, R, P = straight(5, 6, 8), straight(9, 10, 12), straight(13, 14, 16), straight(17, 18, 20)
-    if I and M and not R and not P and np.linalg.norm(k[8] - k[12]) > 0.35 * size:
+    if (I and M and not R and not P and np.linalg.norm(k[8] - k[12]) > 0.35 * size
+            and upright(5, 8) and upright(9, 12)):
         return "V"
+    if I and P and not M and not R and upright(5, 8) and upright(17, 20):
+        return "H"
     # open hand: raised (the fingers point up: a hand hanging relaxed beside
     # the cello, between signs, also has them straight), the four fingers
     # straight and fanned out, the thumb out to the side
     up_hand = k[12][1] < w[1] - 0.8 * size and k[9][1] < w[1]
-    if I and M and R and P and up_hand:
+    if I and M and R and P and up_hand and upright(5, 8) and upright(9, 12) and upright(13, 16):
         thumb_out = (np.linalg.norm(k[4] - k[5]) > 0.6 * size
                      and np.linalg.norm(k[4] - w) > 1.2 * np.linalg.norm(k[2] - w))
         spread = np.linalg.norm(k[8] - k[20]) > 0.9 * size
@@ -142,6 +153,9 @@ def main():
     ap.add_argument("--need", type=int, default=4, help="frames with the sign within the window")
     ap.add_argument("--window", type=float, default=2.0)
     ap.add_argument("--release", type=float, default=1.5, help="s without the sign before it may switch again")
+    ap.add_argument("--keep", default=os.path.join(ROOT, "data", "signs_seen"),
+                    help="a copy of each frame where a sign is read, with the hand box (the last 300)")
+    ap.add_argument("--min-vis", type=float, default=0.3, help="the pose's least sure of shoulders, elbow, wrist (0-1) to read the hand")
     a = ap.parse_args()
 
     pose = vision.PoseLandmarker.create_from_options(vision.PoseLandmarkerOptions(
@@ -192,18 +206,36 @@ def main():
             pr = pose.detect_for_video(mp.Image(image_format=mp.ImageFormat.SRGB,
                                                 data=cv2.cvtColor(cv2.resize(img, (960, 540)), cv2.COLOR_BGR2RGB)),
                                        int((now - t_start) * 1000))
+            vis = 0.0
             if pr.pose_landmarks:
                 lm = pr.pose_landmarks[0]
                 wr = max((lm[15], lm[16]), key=lambda p: p.x)     # the hand on the camera's right
                 el = lm[13] if wr is lm[15] else lm[14]
+                # how sure the pose is of the shoulders, elbow and wrist: the
+                # cello alone on its stand is sometimes taken for a person
+                # (about 0.15), a real player is 0.4-1
+                vis = min(lm[11].visibility, lm[12].visibility, wr.visibility, el.visibility)
+            if vis >= a.min_vis:
                 cx, cy = (wr.x + 0.35 * (wr.x - el.x)) * W, (wr.y + 0.35 * (wr.y - el.y)) * H
                 half = max(80.0, 0.55 * abs(lm[11].x - lm[12].x) * W)
                 box, box_t = [cx - half, cy - half, cx + half, cy + half], now
+            elif box is not None and vis > 0 and now - box_t < 1.0:
+                box = None        # a doubtful pose ends the kept box, rather than reading the cello for 1 s
             sign = None
             if box is not None and now - box_t < 1.0:
                 kps, sc = hand(img, bboxes=[box])
                 sign = classify(kps[0], sc[0])
             seen.append((now, sign))
+            if sign in SIGNS and a.keep:
+                os.makedirs(a.keep, exist_ok=True)
+                x0, y0, x1, y1 = (int(v) for v in box)
+                cv2.rectangle(img, (x0, y0), (x1, y1), (0, 0, 255), 4)
+                for x, y in kps[0].astype(int):
+                    cv2.circle(img, (x, y), 5, (0, 255, 255), -1)
+                cv2.imwrite(os.path.join(a.keep, f"{time.strftime('%H%M%S')}_{int(now * 10) % 10}_{sign}_pose{vis:.2f}.jpg"),
+                            cv2.resize(img, (img.shape[1] // 2, img.shape[0] // 2)))
+                for g in sorted(glob.glob(os.path.join(a.keep, "*.jpg")))[:-300]:
+                    os.remove(g)
             while seen and now - seen[0][0] > a.window:
                 seen.popleft()
             for s in SIGNS:
@@ -230,7 +262,7 @@ def main():
             if now - line_t > 1.0:
                 line_t = now
                 print(f"{time.strftime('%H:%M:%S')}  sees {NAMES.get(sign, sign or '-'):9s}  "
-                      f"peace {counts['V']}  thumbs {counts['T']}  open {counts['O']}  ({n} frames)", flush=True)
+                      f"peace {counts['V']}  thumbs {counts['T']}  open {counts['O']}  horns {counts['H']}  pose {vis:.2f}  ({n} frames)", flush=True)
             # the recorder's JPEGs are only needed until read
             for d in dirs:
                 for g in sorted(glob.glob(os.path.join(d, "*.jpg")))[:-3]:

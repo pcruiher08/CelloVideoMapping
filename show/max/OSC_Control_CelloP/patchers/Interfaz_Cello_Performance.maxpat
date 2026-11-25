@@ -1857,7 +1857,7 @@
                     "numinlets": 1,
                     "numoutlets": 0,
                     "patching_rect": [ 1560.0, 60.0, 720.0, 20.0 ],
-                    "text": "EFFECTS BY HAND SIGNS -> ABLETON  (cello app -> udpreceive 7400: /fx/pingpong, /fx/overdrive, /fx/delay  1|0)"
+                    "text": "EFFECTS BY HAND SIGNS -> ABLETON / TD  (cello app -> udpreceive 7400: /fx/pingpong, /fx/overdrive, /fx/delay, /fx/coordinateschange  1|0)"
                 }
             },
             {
@@ -1866,8 +1866,8 @@
                     "maxclass": "comment",
                     "numinlets": 1,
                     "numoutlets": 0,
-                    "patching_rect": [ 1560.0, 82.0, 994.0, 20.0 ],
-                    "text": "-> MIDI CC to Live on 'From Max 1', channel 1: ping-pong CC 20, overdrive CC 21, delay CC 22 (127 on, 0 off; all can be on). In Live: Remote on for 'from Max 1', then MIDI Map each effect's on/off."
+                    "patching_rect": [ 1560.0, 82.0, 1200.0, 20.0 ],
+                    "text": "-> MIDI CC on 'From Max 1', channel 1: ping-pong CC 20, overdrive CC 21, delay CC 22 (Live), coordinates change CC 23 (TouchDesigner) (127 on, 0 off; all can be on). In Live: Remote on for 'from Max 1', then MIDI Map each effect's on/off."
                 }
             },
             {
@@ -1886,10 +1886,10 @@
                     "id": "obj-fx-route",
                     "maxclass": "newobj",
                     "numinlets": 3,
-                    "numoutlets": 4,
-                    "outlettype": [ "", "", "", "" ],
-                    "patching_rect": [ 1560.0, 155.0, 270.0, 22.0 ],
-                    "text": "route /fx/overdrive /fx/pingpong /fx/delay"
+                    "numoutlets": 5,
+                    "outlettype": [ "", "", "", "", "" ],
+                    "patching_rect": [ 1560.0, 155.0, 420.0, 22.0 ],
+                    "text": "route /fx/overdrive /fx/pingpong /fx/delay /fx/coordinateschange"
                 }
             },
             {
@@ -2060,6 +2060,48 @@
                     "numoutlets": 0,
                     "patching_rect": [ 1880.0, 285.0, 140.0, 22.0 ],
                     "text": "ctlout \"From Max 1\" 22 1"
+                }
+            },
+            {
+                "box": {
+                    "id": "obj-fx-ccl",
+                    "maxclass": "comment",
+                    "numinlets": 1,
+                    "numoutlets": 0,
+                    "patching_rect": [ 2040.0, 190.0, 130.0, 20.0 ],
+                    "text": "coordinates change"
+                }
+            },
+            {
+                "box": {
+                    "id": "obj-fx-cct",
+                    "maxclass": "toggle",
+                    "numinlets": 1,
+                    "numoutlets": 1,
+                    "outlettype": [ "int" ],
+                    "parameter_enable": 0,
+                    "patching_rect": [ 2040.0, 212.0, 24.0, 24.0 ]
+                }
+            },
+            {
+                "box": {
+                    "id": "obj-fx-cccc127",
+                    "maxclass": "newobj",
+                    "numinlets": 2,
+                    "numoutlets": 1,
+                    "outlettype": [ "int" ],
+                    "patching_rect": [ 2040.0, 250.0, 45.0, 22.0 ],
+                    "text": "* 127"
+                }
+            },
+            {
+                "box": {
+                    "id": "obj-fx-ccccout",
+                    "maxclass": "newobj",
+                    "numinlets": 3,
+                    "numoutlets": 0,
+                    "patching_rect": [ 2040.0, 285.0, 140.0, 22.0 ],
+                    "text": "ctlout \"From Max 1\" 23 1"
                 }
             }
         ],
@@ -2852,6 +2894,24 @@
                 "patchline": {
                     "destination": [ "obj-fx-dlccout", 0 ],
                     "source": [ "obj-fx-dlcc127", 0 ]
+                }
+            },
+            {
+                "patchline": {
+                    "destination": [ "obj-fx-cct", 0 ],
+                    "source": [ "obj-fx-route", 3 ]
+                }
+            },
+            {
+                "patchline": {
+                    "destination": [ "obj-fx-cccc127", 0 ],
+                    "source": [ "obj-fx-cct", 0 ]
+                }
+            },
+            {
+                "patchline": {
+                    "destination": [ "obj-fx-ccccout", 0 ],
+                    "source": [ "obj-fx-cccc127", 0 ]
                 }
             }
         ],
