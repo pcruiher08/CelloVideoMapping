@@ -135,17 +135,20 @@ def main():
     armed_at = {"V": 0.0, "T": 0.0}
     box, box_t = None, 0.0                # the last hand box, kept 1 s when the pose drops out
     done, line_t, n = None, 0.0, 0
+    last_frame_t = t_start
     print("signs service: running (Ctrl-C to stop)")
     try:
         while True:
             f, dirs = newest_frame(a.clips, t_start)
             if f is None or f == done:
-                if time.time() - (os.path.getmtime(f) if f else t_start) > 60:
+                # (a new recorder folder has no frame to read for a moment:
+                # measure from the last frame read, not from this one)
+                if time.time() - last_frame_t > 60:
                     print("no frames from the app for 60 s: it has stopped; so do the signs")
                     break
                 time.sleep(0.02)
                 continue
-            done = f
+            done, last_frame_t = f, time.time()
             img = cv2.imread(f)
             if img is None:
                 continue
