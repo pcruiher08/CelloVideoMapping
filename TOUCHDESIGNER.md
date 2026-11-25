@@ -193,9 +193,12 @@ page or Max's toggle: Live learns the CC. Press **MIDI** again to leave.
 - **Open Max before Live.** Max makes the "from Max" ports when it starts;
   Live only sees ports that exist when it opens.
 - In the mapping list, each effect's **Min is Off and Max is On**, not
-  toggle: the sign service sends the states again every 2 s, which keeps
-  Live in step. Max passes CC 23 (for TouchDesigner) on only when it changes,
-  so TouchDesigner gets one message per switch, not a repeat every 2 s.
+  toggle.
+- Max sends each CC only when it changes: one 127 when a toggle switches on,
+  one 0 when it switches off, nothing in between. (The sign service repeats
+  the states to Max every 2 s; Max uses that only to catch up after it is
+  restarted.) An effect switched by hand in Live stays that way until its
+  next sign or tap.
 - To check what reaches Live: `python3 tools/midimon.py 10` lists every MIDI
   message for 10 s.
 
