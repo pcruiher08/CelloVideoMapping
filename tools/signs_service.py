@@ -39,6 +39,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # the app's
 MODELS = os.path.join(ROOT, "signs", "models")                       # fetched by tools/signs_setup.sh
 SIGNS = {"V": "pingpong", "T": "overdrive"}
 NAMES = {"V": "peace", "T": "thumbs up"}
+FX_LOCK = threading.Lock()                # a resend never lands between a sign's read and its switch
 
 
 def post(app, path, body=None, timeout=40):
@@ -69,6 +70,27 @@ class Recorder(threading.Thread):
             except Exception as e:
                 print("recorder:", e)
                 time.sleep(1)
+
+
+class Resender(threading.Thread):
+    """Sends the effects' states to Max again every `every` s (the app only
+    repeats them while its own glove detector runs, which this service turns
+    off), so Live comes back in step if a message is lost or an effect is
+    switched by hand in Live."""
+
+    def __init__(self, app, every=2.0):
+        super().__init__(daemon=True)
+        self.app, self.every, self.running = app, every, True
+
+    def run(self):
+        while self.running:
+            time.sleep(self.every)
+            try:
+                with FX_LOCK:
+                    st = get(self.app, "/api/state")["projector"]["signs"]
+                    post(self.app, "/api/fx", {fx: bool(st[fx]) for fx in SIGNS.values()}, timeout=5)
+            except Exception:
+                pass                      # the app is restarting or busy: next time
 
 
 def newest_frame(clips, t_start):
@@ -129,6 +151,8 @@ def main():
     t_start = time.time()
     rec = Recorder(a.app, a.fps)
     rec.start()
+    resend = Resender(a.app)
+    resend.start()
     seen = deque()                        # (time, sign)
     armed = {"V": True, "T": True}
     last_seen = {"V": 0.0, "T": 0.0}
@@ -183,8 +207,9 @@ def main():
                 if armed[s] and counts[s] >= a.need and counts[s] > counts[other]:
                     fx = SIGNS[s]
                     try:
-                        cur = get(a.app, "/api/state")["projector"]["signs"][fx]
-                        st = post(a.app, "/api/fx", {fx: not cur}, timeout=5)
+                        with FX_LOCK:
+                            cur = get(a.app, "/api/state")["projector"]["signs"][fx]
+                            st = post(a.app, "/api/fx", {fx: not cur}, timeout=5)
                         print(f"{time.strftime('%H:%M:%S')}  {NAMES[s]} -> {fx} {'ON' if st[fx] else 'off'}", flush=True)
                     except Exception as e:
                         print("could not switch", fx, e)
@@ -205,7 +230,7 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
-        rec.running = False
+        rec.running = resend.running = False
         for d in rec.dirs + newest_frame(a.clips, t_start)[1]:
             shutil.rmtree(d, ignore_errors=True)
 

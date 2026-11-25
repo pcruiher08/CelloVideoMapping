@@ -175,7 +175,8 @@ page or Max's toggle: Live learns the CC. Press **MIDI** again to leave.
 - **Open Max before Live.** Max makes the "from Max" ports when it starts;
   Live only sees ports that exist when it opens.
 - In the mapping list, each effect's **Min is Off and Max is On**, not
-  toggle: Max repeats the states every 2 s, which keeps Live in step.
+  toggle: the sign service sends both states again every 2 s, which keeps
+  Live in step.
 - To check what reaches Live: `python3 tools/midimon.py 10` lists every MIDI
   message for 10 s.
 
