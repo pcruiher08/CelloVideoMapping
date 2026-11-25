@@ -96,6 +96,19 @@ class Resender(threading.Thread):
                 pass                      # the app is restarting or busy: next time
 
 
+def settled(shoulders, now, still=0.03, span=0.8):
+    """The player sits still: the shoulders' middle (image 0-1) has moved
+    less than `still` over the last second, seen for at least `span` s.
+    Walking on, carrying the cello or sitting down are not (a hand round the
+    scroll read as thumbs up while sitting down)."""
+    while shoulders and now - shoulders[0][0] > 1.0:
+        shoulders.popleft()
+    if len(shoulders) < 3 or now - shoulders[0][0] < span:
+        return False
+    xs, ys = [p[1] for p in shoulders], [p[2] for p in shoulders]
+    return max(xs) - min(xs) < still and max(ys) - min(ys) < still
+
+
 def newest_frame(clips, t_start):
     dirs = [d for d in glob.glob(os.path.join(clips, "fullres_*")) if os.path.getmtime(d) >= t_start - 1]
     if not dirs:
@@ -155,6 +168,8 @@ def main():
     ap.add_argument("--release", type=float, default=1.5, help="s without the sign before it may switch again")
     ap.add_argument("--keep", default=os.path.join(ROOT, "data", "signs_seen"),
                     help="a copy of each frame where a sign is read, with the hand box (the last 300)")
+    ap.add_argument("--min-shoulders", type=float, default=0.065,
+                    help="the player's shoulder width, 0-1 of the image (0.08-0.09 seated on the stage, 2.9 m away)")
     ap.add_argument("--min-vis", type=float, default=0.3, help="the pose's least sure of shoulders, elbow, wrist (0-1) to read the hand")
     a = ap.parse_args()
 
@@ -183,6 +198,7 @@ def main():
     last_seen = {s: 0.0 for s in SIGNS}
     armed_at = {s: 0.0 for s in SIGNS}
     box, box_t = None, 0.0                # the last hand box, kept 1 s when the pose drops out
+    shoulders = deque()                   # (time, x, y) of the shoulders' middle, the last second
     done, line_t, n = None, 0.0, 0
     last_frame_t = t_start
     print("signs service: running (Ctrl-C to stop)")
@@ -206,7 +222,7 @@ def main():
             pr = pose.detect_for_video(mp.Image(image_format=mp.ImageFormat.SRGB,
                                                 data=cv2.cvtColor(cv2.resize(img, (960, 540)), cv2.COLOR_BGR2RGB)),
                                        int((now - t_start) * 1000))
-            vis = 0.0
+            vis, wide = 0.0, 0.0
             if pr.pose_landmarks:
                 lm = pr.pose_landmarks[0]
                 wr = max((lm[15], lm[16]), key=lambda p: p.x)     # the hand on the camera's right
@@ -215,14 +231,19 @@ def main():
                 # cello alone on its stand is sometimes taken for a person
                 # (about 0.15), a real player is 0.4-1
                 vis = min(lm[11].visibility, lm[12].visibility, wr.visibility, el.visibility)
-            if vis >= a.min_vis:
+                # the shoulders' width: a phantom pose in the empty stage is
+                # narrower (0.04-0.06) than the seated player (0.075-0.095)
+                wide = abs(lm[11].x - lm[12].x)
+                if vis >= a.min_vis and wide >= a.min_shoulders:
+                    shoulders.append((now, (lm[11].x + lm[12].x) / 2, (lm[11].y + lm[12].y) / 2))
+            if vis >= a.min_vis and wide >= a.min_shoulders:
                 cx, cy = (wr.x + 0.35 * (wr.x - el.x)) * W, (wr.y + 0.35 * (wr.y - el.y)) * H
                 half = max(80.0, 0.55 * abs(lm[11].x - lm[12].x) * W)
                 box, box_t = [cx - half, cy - half, cx + half, cy + half], now
             elif box is not None and vis > 0 and now - box_t < 1.0:
                 box = None        # a doubtful pose ends the kept box, rather than reading the cello for 1 s
             sign = None
-            if box is not None and now - box_t < 1.0:
+            if box is not None and now - box_t < 1.0 and settled(shoulders, now):
                 kps, sc = hand(img, bboxes=[box])
                 sign = classify(kps[0], sc[0])
             seen.append((now, sign))
