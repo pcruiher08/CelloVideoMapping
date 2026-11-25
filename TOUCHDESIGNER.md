@@ -142,18 +142,21 @@ drifts slowly.
 
 ## Hand signs switch effects in Ableton
 
-With the fingering hand beside the cello's neck, **in the white gloves**:
+With the fingering hand (bare, no gloves needed) beside the cello's neck:
 
-- **✌️ peace**, held about 1 s, switches the **ping-pong delay** on or off.
-- **👍 thumbs up**, held about 1 s, switches the **overdrive** on or off.
-- Lower the hand before the same sign switches it back.
+- **✌️ peace**, held about 1–2 s, switches the **ping-pong delay** on or off.
+- **👍 thumbs up**, held about 1–2 s, switches the **overdrive** on or off.
+- Lower the hand for about 2 s before the same sign switches it back.
 
-The app reads the glove's outline in the Kinect's full-resolution image (bare
-hands are not seen; white things that were already in the zone are ignored).
-It sends `/fx/pingpong` and `/fx/overdrive` (1 on, 0 off; each on its own, so both
-can be on) to Max
-on `127.0.0.1:7400`, on every change and every 2 s. The web page
-(TouchDesigner section) shows the sign it sees and has buttons for both.
+The signs are read by a service of their own, `tools/signs_service.py`,
+which `show.sh` starts with the app (its log: `data/signs.log`;
+`SIGNS=0 ./show.sh` leaves it off). The first start sets it up with
+`tools/signs_setup.sh`: its own Python environment and two models, a few
+minutes with internet. It finds the cellist's hand with MediaPipe's body
+pose, reads the fingers with RTMPose-hand, and switches the effects as the
+web page's buttons do. The app sends `/fx/pingpong` and `/fx/overdrive` (1
+on, 0 off; each on its own, so both can be on) to Max on `127.0.0.1:7400`.
+The web page (TouchDesigner section) has buttons for both.
 
 Max (`Interfaz_Cello_Performance.maxpat`, in this repository's `show/max/`)
 turns them into **MIDI CC on Max's "From Max 1" port, channel 1** (the port
@@ -168,6 +171,13 @@ In Ableton Live: in **Settings → Link, Tempo & MIDI**, turn on **Remote** for
 the input "from Max 1". Then press **MIDI** (top right) to enter MIDI Map
 Mode, click an effect's on/off button, and switch that effect from the web
 page or Max's toggle: Live learns the CC. Press **MIDI** again to leave.
+
+- **Open Max before Live.** Max makes the "from Max" ports when it starts;
+  Live only sees ports that exist when it opens.
+- In the mapping list, each effect's **Min is Off and Max is On**, not
+  toggle: Max repeats the states every 2 s, which keeps Live in step.
+- To check what reaches Live: `python3 tools/midimon.py 10` lists every MIDI
+  message for 10 s.
 
 ## What the app does on its own
 

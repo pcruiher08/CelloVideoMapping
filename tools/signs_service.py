@@ -1,7 +1,8 @@
 """Hand signs from bare hands, as a separate service next to the running app
 (a quick test: the app itself is not changed).
 
-    ~/cello-signs/venv/bin/python signs_service.py [--app http://127.0.0.1:8000]
+    bash tools/signs_setup.sh                    # once: its own Python + the two models
+    signs/venv/bin/python tools/signs_service.py # show.sh starts it with the app
 
 - frames: keeps the app's full-resolution recorder (/api/debug/fullres)
   running and reads the newest JPEG it writes (about 10 a second);
@@ -34,8 +35,8 @@ from mediapipe.tasks import python as mpt
 from mediapipe.tasks.python import vision
 from rtmlib import RTMPose
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-MODELS = os.path.expanduser("~/cello-signs/models")
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # the app's folder
+MODELS = os.path.join(ROOT, "signs", "models")                       # fetched by tools/signs_setup.sh
 SIGNS = {"V": "pingpong", "T": "overdrive"}
 NAMES = {"V": "peace", "T": "thumbs up"}
 
@@ -103,11 +104,11 @@ def classify(k, s, cut=0.15):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--app", default="http://127.0.0.1:8000")
-    ap.add_argument("--clips", default=os.path.expanduser("~/Downloads/cellotracking-20261124/data/clips"))
+    ap.add_argument("--clips", default=os.path.join(ROOT, "data", "clips"))
     ap.add_argument("--fps", type=float, default=10)
-    ap.add_argument("--need", type=int, default=5, help="frames with the sign within the window")
-    ap.add_argument("--window", type=float, default=1.5)
-    ap.add_argument("--release", type=float, default=0.7)
+    ap.add_argument("--need", type=int, default=4, help="frames with the sign within the window")
+    ap.add_argument("--window", type=float, default=2.0)
+    ap.add_argument("--release", type=float, default=1.5, help="s without the sign before it may switch again")
     a = ap.parse_args()
 
     pose = vision.PoseLandmarker.create_from_options(vision.PoseLandmarkerOptions(
@@ -116,11 +117,14 @@ def main():
     onnx = glob.glob(os.path.join(MODELS, "rtmpose-m_simcc-hand5*.onnx"))[0]
     hand = RTMPose(onnx, model_input_size=(256, 256))
 
-    # the old glove detector off, so the two don't both switch the effects
-    try:
-        post(a.app, "/api/settings", {"signs": False})
-    except Exception as e:
-        print("could not turn the app's own sign detector off:", e)
+    # wait for the app (show.sh starts both together), then turn its old
+    # glove detector off, so the two don't both switch the effects
+    while True:
+        try:
+            post(a.app, "/api/settings", {"signs": False}, timeout=5)
+            break
+        except Exception:
+            time.sleep(2)
 
     t_start = time.time()
     rec = Recorder(a.app, a.fps)
@@ -136,6 +140,9 @@ def main():
         while True:
             f, dirs = newest_frame(a.clips, t_start)
             if f is None or f == done:
+                if time.time() - (os.path.getmtime(f) if f else t_start) > 60:
+                    print("no frames from the app for 60 s: it has stopped; so do the signs")
+                    break
                 time.sleep(0.02)
                 continue
             done = f

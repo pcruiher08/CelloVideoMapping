@@ -29,3 +29,4 @@ models/*
 data/*
 !data/replacements/
 !data/sources/
+signs/

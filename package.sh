@@ -32,12 +32,13 @@ done
 
 [ -f models/cello-seg.pt ] || { echo "models/cello-seg.pt missing: train first" >&2; exit 1; }
 
-NAME="cellotracking-$(date +%Y%m%d)"
+NAME=${NAME:-cellotracking-$(date +%Y%m%d)}     # NAME=... ./package.sh for a second zip on one day
 STAGE=$(mktemp -d)
 DEST="$STAGE/$NAME"
 mkdir -p "$DEST/models" "$DEST/data" dist
 
 cp -R bowtrack cellomask "$DEST/"
+mkdir -p "$DEST/tools" && cp tools/*.py tools/*.sh "$DEST/tools/"   # the hand-sign service (signs/ is made by tools/signs_setup.sh)
 cp README.md TOUCHDESIGNER.md requirements.txt run.py test_synthetic.py test_tuner.py test_projector.py test_lidar.py test_predict.py test_shape.py test_live.py test_kinect.py test_model3d.py test_bow.py test_paint.py test_signs.py install.sh run.sh show.sh package.sh "$DEST/"
 mkdir -p "$DEST/kinect" && cp kinect/build.sh kinect/cellokinect.cpp "$DEST/kinect/"   # built by install.sh
 mkdir -p "$DEST/ios" && rsync -a --exclude build --exclude "*.xcodeproj" ios/CelloDepth "$DEST/ios/"

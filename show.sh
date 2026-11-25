@@ -23,6 +23,16 @@ fi
 echo "Web page: http://${IP:-localhost}:${PORT:-8000}"
 echo "Projector window: f cover / uncover the screen, b blackout, q quits (connect the projector and"
 echo "set it to extend BEFORE starting, or the window opens on this screen)"
+# hand signs (✌️ ping-pong, 👍 overdrive) from bare hands: a service of its
+# own beside the app (tools/signs_service.py, its log in data/signs.log)
+if [ "${SIGNS:-1}" = 1 ]; then
+    [ -x signs/venv/bin/python ] || bash tools/signs_setup.sh || echo "hand signs: setup failed (needs internet); the show runs without them"
+    if [ -x signs/venv/bin/python ]; then
+        pkill -f tools/signs_service.py 2>/dev/null || true
+        signs/venv/bin/python -u tools/signs_service.py > data/signs.log 2>&1 &
+        echo "Hand signs: on (log: data/signs.log; SIGNS=0 ./show.sh to leave them off)"
+    fi
+fi
 # tracked at 960x540: the 3D calibration and scan are in metres, so they
 # hold at any resolution, and every mask step costs ~half of 1280x720
 # caffeinate: no display sleep, idle sleep or screen saver while the show
