@@ -8,13 +8,15 @@
 <meta name="apple-mobile-web-app-title" content="Toggles">
 <title>Cello toggles</title>
 <style>
-  /* the four hand-sign toggles; a tap on a tile switches it (as the sign would) */
+  /* the four hand-sign toggles and the bow painting; a tap on a tile switches it */
   :root { --bg: #000; --tile: #1a1a1a; --text: #f2f2f2; --dim: #8a8a8a; --on: #19c26b; }
   * { box-sizing: border-box; margin: 0; }
   html, body { height: 100%; background: var(--bg); color: var(--text);
     font: 16px -apple-system, system-ui, sans-serif; -webkit-user-select: none; user-select: none; }
   body { display: flex; flex-direction: column; padding: max(12px, env(safe-area-inset-top)) 12px max(12px, env(safe-area-inset-bottom)); gap: 10px; }
-  .grid { flex: 1; display: grid; grid-template-rows: repeat(4, 1fr); gap: 10px; }
+  .grid { flex: 1; display: grid; grid-template-rows: repeat(5, 1fr); gap: 10px; }
+  .t.paint { --on: #3d8bff; }
+  .t.paint.on { background: #3d8bff; }
   .t { background: var(--tile); border-radius: 18px; display: flex; align-items: center; gap: 14px;
     padding: 0 18px; transition: background .15s, transform .08s; cursor: pointer;
     touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
@@ -32,7 +34,14 @@
   .bar.ok .dot { background: var(--on); }
   .bar.lost { color: #ff5b5b; }
   .bar.lost .dot { background: #ff5b5b; }
-  @media (orientation: landscape) { .grid { grid-template-rows: 1fr 1fr; grid-template-columns: 1fr 1fr; } }
+  /* a phone on its side or a laptop: the signs 2 x 2 (4 in a row when wide),
+     the painting across the whole width below */
+  @media (orientation: landscape) { .grid { grid-template-rows: 1fr 1fr 1fr; grid-template-columns: 1fr 1fr; }
+    .t.paint { grid-column: 1 / -1; } }
+  @media (orientation: landscape) and (min-width: 1000px) { .grid { grid-template-rows: 2fr 1fr; grid-template-columns: repeat(4, 1fr); }
+    .t { flex-direction: column; justify-content: center; text-align: center; gap: 8px; }
+    .t .name { flex: 0 0 auto; } .t.paint { flex-direction: row; text-align: left; } .t.paint .name { flex: 1; }
+    .t .sign { font-size: 64px; width: auto; } .t .st { font-size: 34px; } }
 </style>
 </head>
 <body>
@@ -41,39 +50,49 @@
   <div class="t" id="overdrive"><div class="sign">👍</div><div class="name"><b>Overdrive</b><small>CC 21 · Live</small></div><div class="st">OFF</div></div>
   <div class="t" id="delay"><div class="sign">🖐️</div><div class="name"><b>Delay</b><small>CC 22 · Live</small></div><div class="st">OFF</div></div>
   <div class="t" id="coordinateschange"><div class="sign">🤘</div><div class="name"><b>Coordinates</b><small>CC 23 · TouchDesigner</small></div><div class="st">OFF</div></div>
+  <div class="t paint" id="paint"><div class="sign">🎨</div><div class="name"><b>Bow painting</b><small id="paintInfo">no sign: switch it here</small></div><div class="st">OFF</div></div>
 </div>
 <div class="bar" id="bar"><span><span class="dot"></span><span id="conn">connecting…</span></span><span id="seen"></span></div>
 <script>
 const ids = ['pingpong', 'overdrive', 'delay', 'coordinateschange'];
-let last = 0, state = {};
-function show(s) {
-  state = s;
-  for (const k of ids) {
-    const el = document.getElementById(k), on = !!s[k];
-    el.classList.toggle('on', on);
-    el.querySelector('.st').textContent = on ? 'ON' : 'OFF';
-  }
-  last = Date.now();
+let last = 0, fx = {}, paintOn = false;
+const post = (url, body) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+function tile(id, on) {
+  const el = document.getElementById(id);
+  el.classList.toggle('on', on);
+  el.querySelector('.st').textContent = on ? 'ON' : 'OFF';
 }
-// a tap switches that toggle (one request at a time per tile, so a double tap
-// does not switch it twice)
+function showFx(s) { fx = s; for (const k of ids) tile(k, !!s[k]); }
+function showPaint(enabled, p) {
+  paintOn = enabled; tile('paint', enabled);
+  document.getElementById('paintInfo').textContent = !enabled ? 'off: the bow does not paint'
+    : p && p.active ? (p.erasing ? 'painting now (eraser)' : 'painting now')
+    : p && p.fading ? 'fading out' : 'ready: bow upright 2 s to start';
+}
+async function tap(el, act) {
+  if (el.classList.contains('busy')) return;     // one request at a time: a double tap does not switch twice
+  el.classList.add('busy');
+  try { await act(); await tick(); } catch (e) {}
+  setTimeout(() => el.classList.remove('busy'), 400);
+}
 for (const k of ids) {
   const el = document.getElementById(k);
-  el.addEventListener('click', async () => {
-    if (el.classList.contains('busy')) return;
-    el.classList.add('busy');
-    try {
-      const r = await fetch('/api/fx', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-                                         body: JSON.stringify({ [k]: !state[k] }) });
-      show(await r.json());
-    } catch (e) {}
-    setTimeout(() => el.classList.remove('busy'), 400);
-  });
+  el.addEventListener('click', () => tap(el, async () => showFx(await (await post('/api/fx', { [k]: !fx[k] })).json())));
 }
+// the bow painting: on = the bow may paint (its gestures start and stop it);
+// off = it may not, and what is painted fades out
+const pe = document.getElementById('paint');
+pe.addEventListener('click', () => tap(pe, async () => {
+  const on = !paintOn;
+  await post('/api/settings', { paint: on });
+  if (!on) await post('/api/paint', { action: 'stop' });
+}));
 async function tick() {
   try {
-    const r = await fetch('/api/fx', { cache: 'no-store' });
-    show(await r.json());
+    const st = await (await fetch('/api/state', { cache: 'no-store' })).json();
+    showFx(st.projector.signs);
+    showPaint(!!st.settings.paint, st.projector.paint);
+    last = Date.now();
   } catch (e) {}
   const ok = Date.now() - last < 3000, bar = document.getElementById('bar');
   bar.className = 'bar ' + (ok ? 'ok' : 'lost');
