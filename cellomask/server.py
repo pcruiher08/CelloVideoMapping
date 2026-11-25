@@ -2284,6 +2284,15 @@ def build_app(pipe):
     def output_page():
         return FileResponse(os.path.join(STATIC, "output.html"))
 
+    @app.get("/toggles")
+    def toggles_page():
+        """The four sign toggles at a glance, for a phone (view only)."""
+        return FileResponse(os.path.join(STATIC, "toggles.html"), headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/fx")
+    def fx_state():
+        return pipe.signs.status()
+
     @app.get("/cloud")
     def cloud_page():
         return FileResponse(os.path.join(STATIC, "cloud.html"))

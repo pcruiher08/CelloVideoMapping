@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="apple-mobile-web-app-title" content="Toggles">
+<title>Cello toggles</title>
+<style>
+  /* the four hand-sign toggles, view only (a tap never switches anything) */
+  :root { --bg: #000; --tile: #1a1a1a; --text: #f2f2f2; --dim: #8a8a8a; --on: #19c26b; }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { height: 100%; background: var(--bg); color: var(--text);
+    font: 16px -apple-system, system-ui, sans-serif; -webkit-user-select: none; user-select: none; }
+  body { display: flex; flex-direction: column; padding: max(12px, env(safe-area-inset-top)) 12px max(12px, env(safe-area-inset-bottom)); gap: 10px; }
+  .grid { flex: 1; display: grid; grid-template-rows: repeat(4, 1fr); gap: 10px; }
+  .t { background: var(--tile); border-radius: 18px; display: flex; align-items: center; gap: 14px;
+    padding: 0 18px; transition: background .15s; }
+  .t .sign { font-size: 44px; width: 56px; text-align: center; }
+  .t .name { flex: 1; }
+  .t .name b { display: block; font-size: 22px; }
+  .t .name small { color: var(--dim); font-size: 13px; }
+  .t .st { font-size: 26px; font-weight: 800; color: var(--dim); }
+  .t.on { background: var(--on); color: #000; }
+  .t.on .name small, .t.on .st { color: #000; }
+  .bar { display: flex; justify-content: space-between; color: var(--dim); font-size: 13px; }
+  .bar .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--dim); margin-right: 6px; }
+  .bar.ok .dot { background: var(--on); }
+  .bar.lost { color: #ff5b5b; }
+  .bar.lost .dot { background: #ff5b5b; }
+  @media (orientation: landscape) { .grid { grid-template-rows: 1fr 1fr; grid-template-columns: 1fr 1fr; } }
+</style>
+</head>
+<body>
+<div class="grid">
+  <div class="t" id="pingpong"><div class="sign">✌️</div><div class="name"><b>Ping-pong</b><small>CC 20 · Live</small></div><div class="st">OFF</div></div>
+  <div class="t" id="overdrive"><div class="sign">👍</div><div class="name"><b>Overdrive</b><small>CC 21 · Live</small></div><div class="st">OFF</div></div>
+  <div class="t" id="delay"><div class="sign">🖐️</div><div class="name"><b>Delay</b><small>CC 22 · Live</small></div><div class="st">OFF</div></div>
+  <div class="t" id="coordinateschange"><div class="sign">🤘</div><div class="name"><b>Coordinates</b><small>CC 23 · TouchDesigner</small></div><div class="st">OFF</div></div>
+</div>
+<div class="bar" id="bar"><span><span class="dot"></span><span id="conn">connecting…</span></span><span id="seen"></span></div>
+<script>
+const ids = ['pingpong', 'overdrive', 'delay', 'coordinateschange'];
+let last = 0;
+async function tick() {
+  try {
+    const r = await fetch('/api/fx', { cache: 'no-store' });
+    const s = await r.json();
+    for (const k of ids) {
+      const el = document.getElementById(k), on = !!s[k];
+      el.classList.toggle('on', on);
+      el.querySelector('.st').textContent = on ? 'ON' : 'OFF';
+    }
+    last = Date.now();
+  } catch (e) {}
+  const ok = Date.now() - last < 3000, bar = document.getElementById('bar');
+  bar.className = 'bar ' + (ok ? 'ok' : 'lost');
+  document.getElementById('conn').textContent = ok ? 'live' : 'no connection to the show';
+  document.getElementById('seen').textContent = last ? new Date(last).toLocaleTimeString() : '';
+}
+tick(); setInterval(tick, 500);
+</script>
+</body>
+</html>
