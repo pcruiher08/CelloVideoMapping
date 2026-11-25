@@ -40,6 +40,7 @@ mkdir -p "$DEST/models" "$DEST/data" dist
 cp -R bowtrack cellomask "$DEST/"
 mkdir -p "$DEST/tools" && cp tools/*.py tools/*.sh "$DEST/tools/"   # the hand-sign service (signs/ is made by tools/signs_setup.sh)
 cp README.md TOUCHDESIGNER.md requirements.txt run.py test_synthetic.py test_tuner.py test_projector.py test_lidar.py test_predict.py test_shape.py test_live.py test_kinect.py test_model3d.py test_bow.py test_paint.py test_signs.py install.sh run.sh show.sh package.sh "$DEST/"
+rsync -a --exclude .DS_Store show "$DEST/"   # the show's TouchDesigner, Max and Live files
 mkdir -p "$DEST/kinect" && cp kinect/build.sh kinect/cellokinect.cpp "$DEST/kinect/"   # built by install.sh
 mkdir -p "$DEST/ios" && rsync -a --exclude build --exclude "*.xcodeproj" ios/CelloDepth "$DEST/ios/"
 for f in config.json warp.json; do [ -f "$f" ] && cp "$f" "$DEST/"; done
